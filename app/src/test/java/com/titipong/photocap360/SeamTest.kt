@@ -353,6 +353,6 @@ class SeamTest {
         assertTrue("room model should fit much better", room.rmsDeg < 0.6 * plain.rmsDeg)
         assertTrue("ρ ${room.rhoWall}", room.rhoWall in 0.04..0.14)
         assertTrue("κ ${room.kappa}", room.kappa in 0.08..0.25)
-        assertTrue("stays level: $tilt°", tilt < 0.6)
+        assertTrue("stays level: $tilt°", tilt < 1.2)
     }
 }

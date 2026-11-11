@@ -193,8 +193,8 @@ class Aligner(
         private const val GRID_Y = 20
         private const val HUBER = 0.004                  // rad ≈ 0.23°
         private const val PRIOR_W = 4e-4                 // yaw: ≈ (0.1° / 5.7°)², gyro yaw drifts
-        /** Tilt (pitch/roll) from the gyro is gravity-referenced and accurate: hold it to ≈1°. */
-        private const val PRIOR_TILT_W = 0.013
+        /** Tilt (pitch/roll) from the gyro is gravity-referenced and accurate: hold it to ≈0.5°. */
+        private const val PRIOR_TILT_W = 0.05
         /** Rotation between consecutively captured frames from the gyro: ≈1° (little drift in a few seconds). */
         private const val REL_W = 0.013
         /** Floor shots see the floor ~1.3 m away (big parallax): their matches count this much. */
