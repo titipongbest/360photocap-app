@@ -53,7 +53,7 @@ private object TestScene {
      */
     fun render(
         r: FloatArray, th: Double, tv: Double, w: Int, h: Int,
-        gain: Double = 1.0, camOffset: Double = 0.0, rho: Double = 1.0,
+        gain: Double = 1.0, camOffset: Double = 0.0, rho: Double = 1.0, vignette: Double = 0.0,
     ): IntArray {
         val c = SphereMath.cameraForward(r) * camOffset
         val px = IntArray(w * h)
@@ -67,7 +67,8 @@ private object TestScene {
                 val t = -cd + sqrt(cd * cd - c.dot(c) + rho * rho)
                 v = foreground((c + d * t).normalized())
             }
-            px[y * w + x] = gray(v ?: background(d), gain)
+            val vig = 1 - vignette * (nx * nx + ny * ny) / 2
+            px[y * w + x] = gray(v ?: background(d), gain * vig)
         }
         return px
     }
@@ -148,5 +149,47 @@ class SeamTest {
         println("STAT totalVariation plain=%.0f seamFinder=%.0f".format(totalVariation(a), totalVariation(b)))
         assertTrue("seam energy should drop", st.seamEnergyAfter < st.seamEnergyBefore * 0.85)
         for (px in b) assertEquals(0xFF, px ushr 24)
+    }
+
+    /**
+     * Vignetting (frame corners 30 % darker) + random exposure: with sharp seams each frame's
+     * shading shows up as a step at the seam ("patches"). Multi-band spreads it out.
+     * Metric: mean |gradient(out) − gradient(truth)| — sensitive to steps, not to smooth shading.
+     */
+    @Test fun multiBandRemovesPatches() {
+        val rnd = Random(5)
+        val frames = poses().map { r ->
+            val g = 0.92 + 0.16 * rnd.nextDouble()
+            FrameImage(TestScene.render(r, th, tv, 200, 267, gain = g, vignette = 0.3), 200, 267, r, th, tv)
+        }
+        val ow = 512; val oh = 256
+        fun render(multi: Boolean): IntArray {
+            val core = StitchCore(frames, yaw0)
+            core.multiBand = multi
+            core.prepare(ow, oh)
+            return IntArray(ow * oh).also { core.renderRows(ow, oh, 0, oh, it) }
+        }
+        val truth = IntArray(ow * oh) { i ->
+            val u = i % ow; val v = i / ow
+            val lon = (u + 0.5) / ow * 2 * PI - PI
+            val lat = PI / 2 - (v + 0.5) / oh * PI
+            TestScene.gray(TestScene.background(SphereMath.dirFromYawPitch(lon + yaw0, lat)))
+        }
+        fun gradErr(img: IntArray): Double {
+            var sum = 0.0; var n = 0
+            for (v in oh / 10 until oh - oh / 10) for (u in 0 until ow) {
+                val i = v * ow + u; val r = v * ow + (u + 1) % ow; val d = i + ow
+                fun g(a: IntArray, k: Int) = ((a[k] shr 8) and 0xFF).toDouble()
+                sum += abs((g(img, r) - g(img, i)) - (g(truth, r) - g(truth, i)))
+                sum += abs((g(img, d) - g(img, i)) - (g(truth, d) - g(truth, i)))
+                n += 2
+            }
+            return sum / n
+        }
+        val sharp = render(false); val multi = render(true)
+        for (px in multi) assertEquals(0xFF, px ushr 24)
+        val eSharp = gradErr(sharp); val eMulti = gradErr(multi)
+        println("STAT multiband gradErr sharp=%.3f multi=%.3f".format(eSharp, eMulti))
+        assertTrue("multi-band $eMulti vs sharp $eSharp", eMulti < eSharp * 0.9)
     }
 }

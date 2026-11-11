@@ -4,7 +4,13 @@ import android.Manifest
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.hardware.SensorManager
+import android.hardware.camera2.CameraCaptureSession
 import android.hardware.camera2.CameraCharacteristics
+import android.hardware.camera2.CameraMetadata
+import android.hardware.camera2.CaptureResult
+import android.hardware.camera2.TotalCaptureResult
+import android.hardware.camera2.params.ColorSpaceTransform
+import android.hardware.camera2.params.RggbChannelVector
 import android.hardware.camera2.CaptureRequest
 import android.os.Bundle
 import android.os.SystemClock
@@ -20,6 +26,7 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.annotation.OptIn
 import androidx.camera.camera2.interop.Camera2CameraControl
 import androidx.camera.camera2.interop.Camera2CameraInfo
+import androidx.camera.camera2.interop.Camera2Interop
 import androidx.camera.camera2.interop.CaptureRequestOptions
 import androidx.camera.camera2.interop.ExperimentalCamera2Interop
 import androidx.camera.core.AspectRatio
@@ -37,6 +44,7 @@ import com.titipong.photocap360.SphereMath.DEG
 import java.io.File
 import kotlin.math.abs
 import kotlin.math.max
+import kotlin.math.roundToInt
 
 class CaptureActivity : ComponentActivity() {
 
@@ -75,7 +83,31 @@ class CaptureActivity : ComponentActivity() {
     private var capturing = false
     private var exposureLocked = false
     private var cameraReadyAt = 0L
+    private var lockedAt = 0L
     private var finished = false
+
+    // Camera capabilities + the latest auto-exposure state seen on the preview stream.
+    private var manualSensor = false
+    private var manualPost = false
+    private var manualFocus = false
+    @Volatile private var lastIso: Int? = null
+    @Volatile private var lastExp: Long? = null
+    @Volatile private var lastFrameDur: Long? = null
+    @Volatile private var lastWbGains: RggbChannelVector? = null
+    @Volatile private var lastWbTransform: ColorSpaceTransform? = null
+    @Volatile private var lastFocus: Float? = null
+
+    private val previewCallback = object : CameraCaptureSession.CaptureCallback() {
+        override fun onCaptureCompleted(s: CameraCaptureSession, request: CaptureRequest, result: TotalCaptureResult) {
+            if (exposureLocked) return
+            result.get(CaptureResult.SENSOR_SENSITIVITY)?.let { lastIso = it }
+            result.get(CaptureResult.SENSOR_EXPOSURE_TIME)?.let { lastExp = it }
+            result.get(CaptureResult.SENSOR_FRAME_DURATION)?.let { lastFrameDur = it }
+            result.get(CaptureResult.COLOR_CORRECTION_GAINS)?.let { lastWbGains = it }
+            result.get(CaptureResult.COLOR_CORRECTION_TRANSFORM)?.let { lastWbTransform = it }
+            result.get(CaptureResult.LENS_FOCUS_DISTANCE)?.let { lastFocus = it }
+        }
+    }
 
     private val requestCamera = registerForActivityResult(ActivityResultContracts.RequestPermission()) { ok ->
         if (ok) startCamera() else { toast(R.string.need_camera); finish() }
@@ -109,6 +141,7 @@ class CaptureActivity : ComponentActivity() {
 
     // ---------------- Camera ----------------
 
+    @OptIn(ExperimentalCamera2Interop::class)
     private fun startCamera() {
         val future = ProcessCameraProvider.getInstance(this)
         future.addListener({
@@ -117,7 +150,10 @@ class CaptureActivity : ComponentActivity() {
                 .setAspectRatioStrategy(AspectRatioStrategy.RATIO_4_3_FALLBACK_AUTO_STRATEGY)
                 .build()
             val rot = preview.display?.rotation ?: 0
-            val pv = Preview.Builder().setResolutionSelector(selector).setTargetRotation(rot).build()
+            val pvBuilder = Preview.Builder().setResolutionSelector(selector).setTargetRotation(rot)
+            // Watch auto-exposure results so we can freeze them as manual settings later.
+            Camera2Interop.Extender(pvBuilder).setSessionCaptureCallback(previewCallback)
+            val pv = pvBuilder.build()
             pv.setSurfaceProvider(preview.surfaceProvider)
             val ic = ImageCapture.Builder()
                 .setResolutionSelector(selector)
@@ -155,6 +191,12 @@ class CaptureActivity : ComponentActivity() {
                 tanLong = max(w, h) / 2 / f
                 tanShort = minOf(w, h) / 2 / f
             }
+            val caps = info.getCameraCharacteristic(CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES) ?: IntArray(0)
+            manualSensor = CameraMetadata.REQUEST_AVAILABLE_CAPABILITIES_MANUAL_SENSOR in caps
+            manualPost = CameraMetadata.REQUEST_AVAILABLE_CAPABILITIES_MANUAL_POST_PROCESSING in caps
+            val minFocus = info.getCameraCharacteristic(CameraCharacteristics.LENS_INFO_MINIMUM_FOCUS_DISTANCE) ?: 0f
+            manualFocus = manualSensor && minFocus > 0f
+            Log.i(TAG, "manual sensor=$manualSensor post=$manualPost focus=$manualFocus")
         } catch (e: Exception) {
             Log.w(TAG, "FOV fallback", e)
         }
@@ -164,20 +206,58 @@ class CaptureActivity : ComponentActivity() {
         Log.i(TAG, "FOV portrait: %.1f° x %.1f°".format(SphereMath.fovDeg(tanH), SphereMath.fovDeg(tanV)))
     }
 
-    /** Lock auto-exposure & white balance so every frame has the same brightness/colour. */
+    /**
+     * Freeze exposure, white balance and focus for the whole capture, so every frame matches.
+     *
+     * Preferred: read the converged auto values from the preview stream and set them as MANUAL
+     * values (AE off with fixed ISO + shutter, AWB off with fixed colour gains + matrix, AF off at
+     * the current distance). AE_LOCK/AWB_LOCK alone are only hints that some phones ignore or that
+     * still capture overrides; manual values are applied to every request, including stills.
+     * Fallback when the camera lacks the MANUAL_* capabilities: AE_LOCK + AWB_LOCK.
+     */
     @OptIn(ExperimentalCamera2Interop::class)
     private fun lockExposure() {
         val cam = camera ?: return
-        try {
-            Camera2CameraControl.from(cam.cameraControl).captureRequestOptions =
-                CaptureRequestOptions.Builder()
-                    .setCaptureRequestOption(CaptureRequest.CONTROL_AE_LOCK, true)
-                    .setCaptureRequestOption(CaptureRequest.CONTROL_AWB_LOCK, true)
-                    .build()
-            exposureLocked = true
-        } catch (e: Exception) {
-            Log.w(TAG, "AE/AWB lock failed", e)
+        val b = CaptureRequestOptions.Builder()
+        val iso = lastIso; val exp = lastExp
+        var mode: String
+        if (manualSensor && iso != null && exp != null) {
+            b.setCaptureRequestOption(CaptureRequest.CONTROL_AE_MODE, CameraMetadata.CONTROL_AE_MODE_OFF)
+            b.setCaptureRequestOption(CaptureRequest.SENSOR_SENSITIVITY, iso)
+            b.setCaptureRequestOption(CaptureRequest.SENSOR_EXPOSURE_TIME, exp)
+            lastFrameDur?.let { b.setCaptureRequestOption(CaptureRequest.SENSOR_FRAME_DURATION, max(it, exp)) }
+            mode = "manual ISO $iso 1/${(1e9 / exp).roundToInt()}s"
+        } else {
+            b.setCaptureRequestOption(CaptureRequest.CONTROL_AE_LOCK, true)
+            mode = "AE lock"
         }
+        val gains = lastWbGains; val xf = lastWbTransform
+        if (manualPost && gains != null && xf != null) {
+            b.setCaptureRequestOption(CaptureRequest.CONTROL_AWB_MODE, CameraMetadata.CONTROL_AWB_MODE_OFF)
+            b.setCaptureRequestOption(CaptureRequest.COLOR_CORRECTION_MODE, CameraMetadata.COLOR_CORRECTION_MODE_TRANSFORM_MATRIX)
+            b.setCaptureRequestOption(CaptureRequest.COLOR_CORRECTION_GAINS, gains)
+            b.setCaptureRequestOption(CaptureRequest.COLOR_CORRECTION_TRANSFORM, xf)
+            mode += ", manual WB"
+        } else {
+            b.setCaptureRequestOption(CaptureRequest.CONTROL_AWB_LOCK, true)
+            mode += ", AWB lock"
+        }
+        val fd = lastFocus
+        if (manualFocus && fd != null) {
+            b.setCaptureRequestOption(CaptureRequest.CONTROL_AF_MODE, CameraMetadata.CONTROL_AF_MODE_OFF)
+            b.setCaptureRequestOption(CaptureRequest.LENS_FOCUS_DISTANCE, fd)
+            mode += ", focus locked"
+        }
+        try {
+            Camera2CameraControl.from(cam.cameraControl).captureRequestOptions = b.build()
+        } catch (e: Exception) {
+            Log.w(TAG, "exposure lock failed", e)
+            mode = "not locked (${e.javaClass.simpleName})"
+        }
+        exposureLocked = true
+        lockedAt = SystemClock.elapsedRealtime()
+        session?.exposureMode = mode
+        Log.i(TAG, "exposure: $mode")
     }
 
     // ---------------- Targeting state machine ----------------
@@ -190,6 +270,7 @@ class CaptureActivity : ComponentActivity() {
         targets = SphereMath.buildTargets(
             SphereMath.fovDeg(tanH), SphereMath.fovDeg(tanV), OVERLAP, includeNadir = true,
         )
+        session!!.targetCount = targets.size
         targetDirs = targets.map { SphereMath.dirFromYawPitch(yaw0 + it.yaw, it.pitch) }
         overlay.targets = targets
         overlay.targetDirs = targetDirs
@@ -232,8 +313,10 @@ class CaptureActivity : ComponentActivity() {
                     val p = (now - holdStart).toFloat() / HOLD_MS
                     overlay.holdProgress = p.coerceAtMost(1f)
                     setHint(R.string.hint_hold)
-                    // Give the camera ~1 s after opening to settle AE before the first shot.
-                    if (p >= 1f && now - cameraReadyAt > 1000) capture(best, r)
+                    // Let auto-exposure settle ~1 s after the camera opens, freeze it while the user
+                    // holds on the first target, and give the new settings ~0.5 s to take effect.
+                    if (!exposureLocked && now - cameraReadyAt > 1000) lockExposure()
+                    if (p >= 1f && exposureLocked && now - lockedAt > 500) capture(best, r)
                 }
             }
         }
@@ -244,7 +327,6 @@ class CaptureActivity : ComponentActivity() {
     private fun capture(targetIndex: Int, rAtTrigger: FloatArray) {
         val ic = imageCapture ?: return
         val s = session ?: return
-        if (!exposureLocked) lockExposure()
         capturing = true
         setHint(R.string.hint_capturing)
         val file = File(s.dir, "frame_%02d_%d.jpg".format(targetIndex, System.currentTimeMillis()))

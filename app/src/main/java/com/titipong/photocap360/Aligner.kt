@@ -140,6 +140,8 @@ class Aligner(private val frames: List<FrameImage>, private val baseLongEdge: In
         val inliers: Int,
         val rmsDeg: Double,
         val applied: Boolean,
+        /** Inlier matches touching each frame (few → that frame is held only by the gyro). */
+        val perFrame: IntArray = IntArray(0),
     )
 
     companion object {
@@ -226,6 +228,7 @@ class Aligner(private val frames: List<FrameImage>, private val baseLongEdge: In
             inliers = inl.size,
             rmsDeg = rms / DEG,
             applied = ok,
+            perFrame = IntArray(n).also { c -> for (m in inl) { c[m.i]++; c[m.j]++ } },
         )
     }
 

@@ -18,6 +18,11 @@ class CaptureSession(
     val yaw0: Double,
     val frames: MutableList<Frame> = mutableListOf(),
 ) {
+    /** How many targets the capture screen planned (for "30/32 frames" diagnostics). */
+    var targetCount = 0
+    /** How exposure/white balance/focus were locked, e.g. "manual ISO 200 1/60s, manual WB". */
+    var exposureMode = ""
+
     fun save() {
         val arr = JSONArray()
         for (f in frames) {
@@ -31,6 +36,8 @@ class CaptureSession(
             put("tanLong", tanLong)
             put("tanShort", tanShort)
             put("yaw0", yaw0)
+            put("targetCount", targetCount)
+            put("exposureMode", exposureMode)
             put("frames", arr)
         }
         File(dir, FILE).writeText(json.toString(2))
@@ -58,7 +65,10 @@ class CaptureSession(
                 json.getDouble("tanShort"),
                 json.getDouble("yaw0"),
                 frames,
-            )
+            ).apply {
+                targetCount = json.optInt("targetCount", 0)
+                exposureMode = json.optString("exposureMode", "")
+            }
         }
     }
 }

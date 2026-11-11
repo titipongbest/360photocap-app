@@ -54,6 +54,12 @@ class FrameImage(
  *     anywhere in an overlap) except within [EDGE] of a frame border. Solved with alpha-expansion
  *     graph cuts (Boykov-Veksler-Zabih; own Dinic max-flow) on a reduced-resolution grid; at render
  *     time the owner map is bilinearly interpolated, which gives a short crossfade at the seams.
+ *  3. Multi-band blending (3 bands, after Burt & Adelson): each frame is split into
+ *         detail = I − L₁,   mid = L₁ − L₂,   low = L₂
+ *     (L₁, L₂ = low-pass ≈ 1° and ≈ 5°, computed in frame space). Each band is blended with its own
+ *     weights: detail with the sharp owner map, mid with the owner map blurred by ≈1°, low with it
+ *     blurred by ≈4°. Brightness/colour differences are spread over a wide band (no patches) while
+ *     detail still comes from one frame (no ghosting).
  */
 class StitchCore(private val frames: List<FrameImage>, private val yaw0: Double) {
 
@@ -75,6 +81,15 @@ class StitchCore(private val frames: List<FrameImage>, private val yaw0: Double)
     private var lw = 0
     private var lh = 0
     private var labels: IntArray? = null
+
+    /** Use multi-band blending after [prepare] (false = sharp seams, for comparison). */
+    var multiBand = true
+    private var slotF: IntArray? = null
+    private var slotN: ByteArray? = null
+    private var bandW1: FloatArray? = null
+    private var bandW2: FloatArray? = null
+    private var low1: Array<LowPass>? = null
+    private var low2: Array<LowPass>? = null
 
     // ---------------------------------------------------------------- candidates
 
@@ -169,9 +184,12 @@ class StitchCore(private val frames: List<FrameImage>, private val yaw0: Double)
         val passes = field.optimize(sweeps)
         seamStats = SeamStats(before, field.seamEnergy(), passes)
         labels = field.lab
+        if (multiBand) buildBands(field, cF, cN)
     }
 
     private fun clamp255(v: Double) = (v + 0.5).toInt().coerceIn(0, 255)
+
+    private fun ramp(t: Double): Double { val c = t.coerceIn(0.0, 1.0); return c * c * (3 - 2 * c) }
 
     /**
      * Least-squares gains (per channel). With Īᵢⱼ = mean colour of frame i over its overlap with j:
@@ -241,6 +259,132 @@ class StitchCore(private val frames: List<FrameImage>, private val yaw0: Double)
         return x
     }
 
+    // ---------------------------------------------------------------- multi-band setup
+
+    /** Block-averaged copy of a frame (a cheap low-pass); sampled bilinearly in frame pixel coords. */
+    private class LowPass(f: FrameImage, val factor: Int) {
+        val w = max(1, (f.width + factor - 1) / factor)
+        val h = max(1, (f.height + factor - 1) / factor)
+        val r = FloatArray(w * h); val g = FloatArray(w * h); val b = FloatArray(w * h)
+
+        init {
+            val cnt = IntArray(w * h)
+            for (y in 0 until f.height) {
+                val row = (y / factor) * w
+                for (x in 0 until f.width) {
+                    val i = row + x / factor
+                    val c = f.pixels[y * f.width + x]
+                    r[i] += ((c shr 16) and 0xFF).toFloat(); g[i] += ((c shr 8) and 0xFF).toFloat(); b[i] += (c and 0xFF).toFloat()
+                    cnt[i]++
+                }
+            }
+            for (i in cnt.indices) if (cnt[i] > 0) { r[i] /= cnt[i]; g[i] /= cnt[i]; b[i] /= cnt[i] }
+        }
+
+        fun sample(x: Double, y: Double, out: DoubleArray) {
+            val gx = ((x + 0.5) / factor - 0.5).coerceIn(0.0, w - 1.0)
+            val gy = ((y + 0.5) / factor - 0.5).coerceIn(0.0, h - 1.0)
+            val x0 = min(gx.toInt(), w - 1); val y0 = min(gy.toInt(), h - 1)
+            val x1 = min(x0 + 1, w - 1); val y1 = min(y0 + 1, h - 1)
+            val fx = gx - x0; val fy = gy - y0
+            val i00 = y0 * w + x0; val i10 = y0 * w + x1; val i01 = y1 * w + x0; val i11 = y1 * w + x1
+            out[0] = bil(r, i00, i10, i01, i11, fx, fy)
+            out[1] = bil(g, i00, i10, i01, i11, fx, fy)
+            out[2] = bil(b, i00, i10, i01, i11, fx, fy)
+        }
+
+        private fun bil(a: FloatArray, i00: Int, i10: Int, i01: Int, i11: Int, fx: Double, fy: Double): Double {
+            val top = a[i00] + (a[i10] - a[i00]) * fx
+            val bot = a[i01] + (a[i11] - a[i01]) * fx
+            return top + (bot - top) * fy
+        }
+    }
+
+    /** Box radius r such that 3 box passes ≈ a Gaussian of σ px:  3·((2r+1)²−1)/12 = σ². */
+    private fun boxRadius(sigmaPx: Double) = max(1, ((sqrt(4 * sigmaPx * sigmaPx + 1) - 1) / 2 + 0.5).toInt())
+
+    private fun buildBands(field: SeamField, cF: IntArray, cN: ByteArray) {
+        val k = KEEP
+        val total = lw * lh
+        val lab = field.lab
+        val lists = field.framePixels
+        val pxPerDeg = lw / 360.0
+        val w1 = FloatArray(total * k); val w2 = FloatArray(total * k)
+
+        // Horizontal radius grows toward the poles so the blur is round on the sphere.
+        fun radii(sigmaDeg: Double): Pair<IntArray, Int> {
+            val s = sigmaDeg * pxPerDeg
+            val rx = IntArray(lh) { y ->
+                val lat = PI / 2 - (y + 0.5) / lh * PI
+                min((lw - 1) / 2, boxRadius(s / max(cos(lat), 0.1)))
+            }
+            return rx to boxRadius(s)
+        }
+        val (rx1, ry1) = radii(MASK1_DEG)
+        val (rx2, ry2) = radii(MASK2_DEG)
+
+        IntStream.range(0, lists.size).parallel().forEach { f ->
+            val pl = lists[f]
+            if (pl.isEmpty() || pl.none { lab[it] == f }) return@forEach
+            var yMin = lh; var yMax = -1
+            for (p in pl) { val y = p / lw; if (y < yMin) yMin = y; if (y > yMax) yMax = y }
+            val a = FloatArray(total); val tmp = FloatArray(total)
+            for (band in 0..1) {
+                val rx = if (band == 0) rx1 else rx2
+                val ry = if (band == 0) ry1 else ry2
+                val y0 = max(0, yMin - 3 * ry); val y1 = min(lh - 1, yMax + 3 * ry)
+                java.util.Arrays.fill(a, 0f)
+                for (p in pl) if (lab[p] == f) a[p] = 1f
+                boxH(a, tmp, y0, y1, rx); boxH(tmp, a, y0, y1, rx); boxH(a, tmp, y0, y1, rx)
+                boxV(tmp, a, y0, y1, ry); boxV(a, tmp, y0, y1, ry); boxV(tmp, a, y0, y1, ry)
+                val target = if (band == 0) w1 else w2
+                for (p in pl) {
+                    val base = p * k
+                    for (sl in 0 until cN[p].toInt()) if (cF[base + sl] == f) { target[base + sl] = a[p]; break }
+                }
+            }
+        }
+        bandW1 = w1; bandW2 = w2
+        slotF = cF; slotN = cN
+
+        val l1 = arrayOfNulls<LowPass>(frames.size); val l2 = arrayOfNulls<LowPass>(frames.size)
+        IntStream.range(0, frames.size).parallel().forEach { i ->
+            val f = frames[i]
+            val framePxPerDeg = (f.width / 2.0) / f.tanH * (PI / 180)
+            l1[i] = LowPass(f, max(2, (framePxPerDeg * LOW1_DEG + 0.5).toInt()))
+            l2[i] = LowPass(f, max(4, (framePxPerDeg * LOW2_DEG + 0.5).toInt()))
+        }
+        low1 = Array(frames.size) { l1[it]!! }
+        low2 = Array(frames.size) { l2[it]!! }
+    }
+
+    /** Horizontal box blur with 360° wrap, rows y0..y1, per-row radius. */
+    private fun boxH(src: FloatArray, dst: FloatArray, y0: Int, y1: Int, rx: IntArray) {
+        for (y in y0..y1) {
+            val r = rx[y]; val row = y * lw; val win = (2 * r + 1).toFloat()
+            var s = 0f
+            for (i in -r..r) s += src[row + ((i % lw) + lw) % lw]
+            for (x in 0 until lw) {
+                dst[row + x] = s / win
+                s += src[row + (x + r + 1) % lw] - src[row + ((x - r) % lw + lw) % lw]
+            }
+        }
+    }
+
+    /** Vertical box blur over rows y0..y1 (zero outside them), normalised at the poles. */
+    private fun boxV(src: FloatArray, dst: FloatArray, y0: Int, y1: Int, r: Int) {
+        fun at(y: Int, x: Int) = if (y < y0 || y > y1) 0f else src[y * lw + x]
+        for (x in 0 until lw) {
+            var s = 0f
+            for (y in y0 - r..y0 + r) s += at(y, x)
+            for (y in y0..y1) {
+                val cnt = min(y + r, lh - 1) - max(y - r, 0) + 1
+                dst[y * lw + x] = s / cnt
+                s += at(y + r + 1, x) - at(y - r, x)
+            }
+        }
+    }
+
     // ---------------------------------------------------------------- render
 
     fun renderRows(outW: Int, outH: Int, rowStart: Int, rowEnd: Int, out: IntArray) {
@@ -260,6 +404,10 @@ class StitchCore(private val frames: List<FrameImage>, private val yaw0: Double)
         }
         val cf = IntArray(MAX_CAND); val cm = DoubleArray(MAX_CAND)
         val cx = DoubleArray(MAX_CAND); val cy = DoubleArray(MAX_CAND); val wc = DoubleArray(MAX_CAND)
+        val wc1 = DoubleArray(MAX_CAND); val wc2 = DoubleArray(MAX_CAND)
+        val t1 = DoubleArray(3); val t2 = DoubleArray(3)
+        val bw1 = bandW1; val bw2 = bandW2; val sF = slotF; val sN = slotN; val lp1 = low1; val lp2 = low2
+        val useBands = multiBand && lab != null && bw1 != null && bw2 != null && sF != null && sN != null && lp1 != null && lp2 != null
 
         for (v in rowStart until rowEnd) {
             val lat = PI / 2 - (v + 0.5) / outH * PI
@@ -294,6 +442,47 @@ class StitchCore(private val frames: List<FrameImage>, private val yaw0: Double)
                         val w = if (t <= 0) 0.0 else t * t * (3 - 2 * t)
                         wc[c] = w; sw += w
                     }
+                }
+                if (useBands && cnt > 1) {
+                    // Wide weights for the mid and low bands (owner map blurred by ≈1° and ≈4°).
+                    for (c in 0 until cnt) { wc1[c] = 0.0; wc2[c] = 0.0 }
+                    val fx = ufx[u]
+                    for (corner in 0..3) {
+                        val xi = if (corner and 1 == 0) ux0[u] else ux1[u]
+                        val yi = if (corner and 2 == 0) y0 else y1
+                        val w = (if (corner and 1 == 0) 1 - fx else fx) * (if (corner and 2 == 0) 1 - fyv else fyv)
+                        val q = yi * lw + xi
+                        val base = q * KEEP
+                        for (sl in 0 until sN!![q].toInt()) {
+                            val fr = sF!![base + sl]
+                            for (c in 0 until cnt) if (cf[c] == fr) {
+                                wc1[c] += w * bw1!![base + sl]; wc2[c] += w * bw2!![base + sl]; break
+                            }
+                        }
+                    }
+                    var s1 = 0.0; var s2 = 0.0
+                    for (c in 0 until cnt) {
+                        // Keep wide bands away from frame borders, where the low-pass is biased.
+                        wc1[c] *= ramp(cm[c] / EDGE_RAMP1); wc2[c] *= ramp(cm[c] / EDGE_RAMP2)
+                        s1 += wc1[c]; s2 += wc2[c]
+                    }
+                    if (s1 <= 1e-9) { for (c in 0 until cnt) wc1[c] = wc[c]; s1 = sw }
+                    if (s2 <= 1e-9) { for (c in 0 until cnt) wc2[c] = wc1[c]; s2 = s1 }
+                    var ar = 0.0; var ag = 0.0; var ab = 0.0
+                    for (c in 0 until cnt) {
+                        val a0 = wc[c] / sw; val a1 = wc1[c] / s1; val a2 = wc2[c] / s2
+                        if (a0 <= 0.0 && a1 <= 0.0 && a2 <= 0.0) continue
+                        val f = frames[cf[c]]; val g = gains[cf[c]]
+                        val x = (cx[c] + 1) / 2 * f.width - 0.5; val y = (1 - cy[c]) / 2 * f.height - 0.5
+                        val col = sample(f, x, y)
+                        lp1!![cf[c]].sample(x, y, t1); lp2!![cf[c]].sample(x, y, t2)
+                        val fr = ((col shr 16) and 0xFF).toDouble(); val fg = ((col shr 8) and 0xFF).toDouble(); val fb = (col and 0xFF).toDouble()
+                        ar += g[0] * (a0 * (fr - t1[0]) + a1 * (t1[0] - t2[0]) + a2 * t2[0])
+                        ag += g[1] * (a0 * (fg - t1[1]) + a1 * (t1[1] - t2[1]) + a2 * t2[1])
+                        ab += g[2] * (a0 * (fb - t1[2]) + a1 * (t1[2] - t2[2]) + a2 * t2[2])
+                    }
+                    out[v * outW + u] = (0xFF shl 24) or (clamp255(ar) shl 16) or (clamp255(ag) shl 8) or clamp255(ab)
+                    continue
                 }
                 var sr = 0.0; var sg = 0.0; var sb = 0.0
                 for (c in 0 until cnt) {
@@ -414,7 +603,7 @@ class StitchCore(private val frames: List<FrameImage>, private val yaw0: Double)
 
         // ---- alpha-expansion
 
-        private val framePixels: Array<IntArray> by lazy {
+        val framePixels: Array<IntArray> by lazy {
             val nf = (cF.maxOrNull() ?: -1) + 1
             val count = IntArray(nf)
             for (p in 0 until total) for (i in 0 until cN[p].toInt()) count[cF[p * k + i]]++
@@ -591,6 +780,14 @@ class StitchCore(private val frames: List<FrameImage>, private val yaw0: Double)
         private const val EDGE = 0.06
         private const val EDGE_WEIGHT = 2000.0
         private const val CAP_SCALE = 8.0
+        /** Low-pass scales of the frame bands, and blur of the owner map for the mid/low bands. */
+        private const val LOW1_DEG = 1.0
+        private const val LOW2_DEG = 5.0
+        private const val MASK1_DEG = 1.0
+        private const val MASK2_DEG = 4.0
+        /** Margins (tan units) over which a frame's mid/low band fades in from its border. */
+        private const val EDGE_RAMP1 = 0.02
+        private const val EDGE_RAMP2 = 0.06
         private const val NO_OVERLAP_COST = 120.0
 
         /**

@@ -105,7 +105,22 @@ class StitchActivity : ComponentActivity() {
         }
         root.addView(hint, FrameLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT, Gravity.TOP or Gravity.CENTER_HORIZONTAL).apply { topMargin = 48 })
 
+        val info = TextView(this).apply {
+            text = result.diag; setTextColor(Color.WHITE); textSize = 12f
+            setBackgroundColor(0xCC000000.toInt()); setPadding(32, 24, 32, 24)
+            setLineSpacing(4f, 1f)
+            visibility = android.view.View.GONE
+            setOnClickListener { visibility = android.view.View.GONE }
+        }
+        root.addView(info, FrameLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT, Gravity.TOP).apply { topMargin = 120 })
+
         val bar = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER; setPadding(32, 32, 32, 48) }
+        val infoBtn = Button(this).apply {
+            text = "ข้อมูล"; setTextColor(Color.WHITE); setBackgroundResource(R.drawable.btn_outline)
+            setOnClickListener {
+                info.visibility = if (info.visibility == android.view.View.VISIBLE) android.view.View.GONE else android.view.View.VISIBLE
+            }
+        }
         val again = Button(this).apply {
             setText(R.string.new_capture); setTextColor(Color.WHITE); setBackgroundResource(R.drawable.btn_outline)
             setOnClickListener { startActivity(Intent(this@StitchActivity, CaptureActivity::class.java)); finish() }
@@ -121,6 +136,7 @@ class StitchActivity : ComponentActivity() {
                 }, null))
             }
         }
+        bar.addView(infoBtn, LinearLayout.LayoutParams(0, 140, 0.8f).apply { marginEnd = 24 })
         bar.addView(again, LinearLayout.LayoutParams(0, 140, 1f).apply { marginEnd = 24 })
         bar.addView(share, LinearLayout.LayoutParams(0, 140, 1f))
         root.addView(bar, FrameLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT, Gravity.BOTTOM))
