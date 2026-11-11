@@ -109,6 +109,8 @@ object SphereMath {
         vFovDeg: Double,
         overlap: Double = 0.35,
         includeNadir: Boolean = true,
+        /** Tilt the downward rows this much further down (covers more floor when there's no nadir shot). */
+        lowerExtraDeg: Double = 0.0,
     ): List<Target> {
         val step = vFovDeg * (1 - overlap)
         // Upper edge rows must reach before the zenith shot takes over.
@@ -122,7 +124,7 @@ object SphereMath {
         order += 0 to 0.0
         pitchesUp.forEachIndexed { i, p -> order += (i + 1) to p }
         order += (extraRows + 1) to 90.0
-        pitchesUp.forEachIndexed { i, p -> order += (extraRows + 2 + i) to -p }
+        pitchesUp.forEachIndexed { i, p -> order += (extraRows + 2 + i) to -(p + lowerExtraDeg) }
         if (includeNadir) order += (2 * extraRows + 2) to -90.0
 
         val out = mutableListOf<Target>()

@@ -97,7 +97,7 @@ class AlignerTest {
     @Test fun recoversRotationsAndFov() {
         val s = setup()
         val before = maxRelErrDeg(s.truth, s.frames.map { it.r })
-        val res = Aligner(s.frames).run()
+        val res = Aligner(s.frames, estimateFov = true).run()
         val after = maxRelErrDeg(s.truth, res.rotations)
         println("STAT align matches=${res.matches} inliers=${res.inliers} rms=%.4f° scale·k=%.5f relErr before=%.3f° after=%.3f°"
             .format(res.rmsDeg, res.fovScale * s.k, before, after))
@@ -108,7 +108,7 @@ class AlignerTest {
 
     @Test fun alignedStitchHasLessGhosting() {
         val s = setup()
-        val res = Aligner(s.frames).run()
+        val res = Aligner(s.frames, estimateFov = true).run()
         val aligned = s.frames.mapIndexed { i, f ->
             FrameImage(f.pixels, f.width, f.height, res.rotations[i], f.tanH * res.fovScale, f.tanV * res.fovScale)
         }
@@ -137,5 +137,12 @@ class AlignerTest {
         val eAfter = seamError(aligned)
         println("STAT seam mean|Δ| before=%.2f after=%.2f (0-255)".format(eBefore, eAfter))
         assertTrue("seam error $eAfter vs $eBefore", eAfter < eBefore * 0.4)
+    }
+
+    @Test fun fovStaysFixedByDefault() {
+        val s = setup()
+        val res = Aligner(s.frames).run()
+        println("STAT fixed-FOV align applied=${res.applied} rms=%.3f° scale=%.5f".format(res.rmsDeg, res.fovScale))
+        assertEquals(1.0, res.fovScale, 1e-3)
     }
 }

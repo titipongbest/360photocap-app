@@ -56,6 +56,8 @@ class CaptureActivity : ComponentActivity() {
         const val HOLD_MS = 450L             // must stay aimed & still this long
         const val MAX_MOVE_DURING_SHOT = 1.5 // deg; retake if moved more while shutter was open
         const val OVERLAP = 0.35
+        /** No nadir shot: tilt the bottom row further down so less floor has to be filled in. */
+        const val LOWER_EXTRA_DEG = 6.0
     }
 
     private lateinit var preview: PreviewView
@@ -269,7 +271,7 @@ class CaptureActivity : ComponentActivity() {
         val dir = File(filesDir, "sessions/${System.currentTimeMillis()}").apply { mkdirs() }
         session = CaptureSession(dir, tanLong, tanShort, yaw0)
         targets = SphereMath.buildTargets(
-            SphereMath.fovDeg(tanH), SphereMath.fovDeg(tanV), OVERLAP, includeNadir = false,
+            SphereMath.fovDeg(tanH), SphereMath.fovDeg(tanV), OVERLAP, includeNadir = false, lowerExtraDeg = LOWER_EXTRA_DEG,
         )
         session!!.targetCount = targets.size
         targetDirs = targets.map { SphereMath.dirFromYawPitch(yaw0 + it.yaw, it.pitch) }

@@ -129,7 +129,16 @@ object Rot {
  *    (keeps the horizon level and fixes the global rotation). Outliers are dropped and
  *    the adjustment repeated.
  */
-class Aligner(private val frames: List<FrameImage>, private val baseLongEdge: Int = 640) {
+class Aligner(
+    private val frames: List<FrameImage>,
+    private val baseLongEdge: Int = 640,
+    /**
+     * Also estimate a common FOV scale. Off by default: with the phone held in front of the body,
+     * parallax makes near objects shift more than the rotation and the solver "explains" that by
+     * shrinking the FOV (≈ offset/distance, e.g. 0.2 m / 3 m ≈ 7 %). The Camera2 FOV is more reliable.
+     */
+    private val estimateFov: Boolean = false,
+) {
 
     class Match(val i: Int, val ax: Double, val ay: Double, val j: Int, val bx: Double, val by: Double)
 
@@ -158,11 +167,13 @@ class Aligner(private val frames: List<FrameImage>, private val baseLongEdge: In
         private const val GRID_Y = 20
         private const val HUBER = 0.004                  // rad ≈ 0.23°
         private const val PRIOR_W = 4e-4                 // ≈ (0.1° / 5.7°)²
-        private const val SCALE_W = 4e-4
+        private const val SCALE_W_FREE = 4e-4
+        private const val SCALE_W_FIXED = 1e6
         private const val DEG = Math.PI / 180
     }
 
     private val n = frames.size
+    private val scaleW = if (estimateFov) SCALE_W_FREE else SCALE_W_FIXED
     private val rot0 = Array(n) { Rot.ofFloat(frames[it].r) }
     private val th = DoubleArray(n) { frames[it].tanH }
     private val tv = DoubleArray(n) { frames[it].tanV }
@@ -420,7 +431,7 @@ class Aligner(private val frames: List<FrameImage>, private val baseLongEdge: In
             val p = Rot.log(Rot.mul(rot[k], Rot.t(rot0[k])))
             c += PRIOR_W * (p[0] * p[0] + p[1] * p[1] + p[2] * p[2])
         }
-        return c + SCALE_W * sigma * sigma
+        return c + scaleW * sigma * sigma
     }
 
     /** Levenberg-Marquardt. Updates [rot] in place, returns the new σ. */
@@ -462,7 +473,7 @@ class Aligner(private val frames: List<FrameImage>, private val baseLongEdge: In
                 val p = Rot.log(Rot.mul(rot[k], Rot.t(rot0[k])))
                 for (c in 0..2) { a[(3 * k + c) * np + 3 * k + c] += PRIOR_W; b[3 * k + c] += PRIOR_W * p[c] }
             }
-            a[cs * np + cs] += SCALE_W; b[cs] += SCALE_W * sigma
+            a[cs * np + cs] += scaleW; b[cs] += scaleW * sigma
 
             var improved = false
             for (attempt in 0 until 6) {
