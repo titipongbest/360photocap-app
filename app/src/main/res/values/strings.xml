@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">360 PhotoCap</string>
+
+    <string name="tip1">ยืนห่างจากวัตถุหรือผนังรอบตัวอย่างน้อย 1 เมตร</string>
+    <string name="tip2">ถือโทรศัพท์แนวตั้ง ชิดหน้าอก</string>
+    <string name="tip3">ยืนอยู่กับที่ แล้วหมุนตัวรอบจุดเดิม</string>
+    <string name="tip4">เล็งวงกลมสีขาวให้ทับจุดสีเขียว แล้วถือนิ่ง แอพจะถ่ายเอง\n\nตอนถ่ายพื้น ให้ยื่นแขนให้กล้องอยู่เหนือจุดที่ยืน</string>
+
+    <string name="back">ย้อนกลับ</string>
+    <string name="next">ถัดไป</string>
+    <string name="start">เริ่มถ่าย</string>
+    <string name="skip">ข้าม</string>
+
+    <string name="undo">ลบภาพล่าสุด</string>
+    <string name="finish">ต่อภาพ</string>
+
+    <string name="hint_aim">เล็งวงกลมขาวไปที่จุดเขียว</string>
+    <string name="hint_hold">ถือนิ่งๆ…</string>
+    <string name="hint_slow">หมุนช้าลงหน่อย</string>
+    <string name="hint_roll">ถือโทรศัพท์ให้ตรง ไม่เอียง</string>
+    <string name="hint_capturing">กำลังถ่าย ถือนิ่งไว้</string>
+    <string name="hint_moved">ขยับระหว่างถ่าย ถ่ายใหม่อีกครั้ง</string>
+    <string name="hint_nadir">ยื่นแขน ให้กล้องอยู่เหนือจุดที่ยืน แล้วเล็งลงพื้น</string>
+    <string name="hint_done">ครบทุกจุดแล้ว กำลังต่อภาพ…</string>
+    <string name="no_sensor">เครื่องนี้ไม่มี gyroscope ใช้แอพนี้ไม่ได้</string>
+    <string name="need_camera">ต้องอนุญาตให้ใช้กล้อง</string>
+
+    <string name="stitching">กำลังต่อภาพ 360°</string>
+    <string name="saved">บันทึกลงแกลเลอรีแล้ว (Pictures/360PhotoCap)</string>
+    <string name="share">แชร์</string>
+    <string name="new_capture">ถ่ายใหม่</string>
+    <string name="viewer_hint">ลากเพื่อหมุนดู · ถ่างนิ้วเพื่อซูม</string>
+</resources>
