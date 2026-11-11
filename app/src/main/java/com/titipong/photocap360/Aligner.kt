@@ -185,7 +185,7 @@ class Aligner(
         private const val PRIOR_W = 4e-4                 // ≈ (0.1° / 5.7°)²
         private const val WARP_SMOOTH = 1.5
         private const val WARP_DAMP = 0.1
-        private const val WARP_MAX = 0.08          // normalized units ≈ 2°
+        private const val WARP_MAX = 0.12          // normalized units ≈ 3°
         private const val WARP_MIN_SAMPLES = 6
         private const val SCALE_W_FREE = 4e-4
         private const val SCALE_W_FIXED = 1e6
@@ -278,7 +278,9 @@ class Aligner(
         if (abs(sigma) >= 0.15) reasons += "FOV เพี้ยน ×%.2f".format(exp(sigma))
         if (maxDev >= 30 * DEG) reasons += "บางภาพต้องหมุน %.0f°".format(maxDev / DEG)
         val ok = reasons.isEmpty()
-        val wf = if (ok && meshWarp) fitWarps(inl, rot, exp(sigma)) else null
+        // Use every match, not just the rotation inliers: the points on near objects are exactly the
+        // ones the rotation-only fit rejects. Gross mismatches are dropped inside fitWarps (|e| > 2·max).
+        val wf = if (ok && meshWarp) fitWarps(all, rot, exp(sigma)) else null
         return Result(
             rotations = if (ok) rot.map { Rot.toFloat(it) } else frames.map { it.r },
             fovScale = if (ok) exp(sigma) else 1.0,
