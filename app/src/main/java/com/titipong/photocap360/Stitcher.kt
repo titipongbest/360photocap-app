@@ -3,6 +3,7 @@ package com.titipong.photocap360
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Matrix
+import android.util.Log
 import androidx.exifinterface.media.ExifInterface
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
@@ -32,11 +33,25 @@ object Stitcher {
         val images = ArrayList<FrameImage>(n)
         for ((i, f) in session.frames.withIndex()) {
             images += loadFrame(f, longEdge, session.tanLong, session.tanShort)
-            onProgress(0.25f * (i + 1) / n)
+            onProgress(0.15f * (i + 1) / n)
         }
 
+        // Refine gyro rotations + FOV from image content so overlaps line up.
+        val align = try {
+            Aligner(images).run { p -> onProgress(0.15f + 0.35f * p) }
+        } catch (e: Throwable) {
+            Log.e("Stitch", "alignment failed, using gyro only", e); null
+        }
+        if (align != null) {
+            Log.i("Stitch", "align: matches=${align.matches} inliers=${align.inliers} " +
+                "rms=%.3f° fovScale=%.4f applied=${align.applied}".format(align.rmsDeg, align.fovScale))
+        }
+        val frames = if (align != null && align.applied) images.mapIndexed { k, f ->
+            FrameImage(f.pixels, f.width, f.height, align.rotations[k], f.tanH * align.fovScale, f.tanV * align.fovScale)
+        } else images
+
         // Output width = horizon pixel density × 360°, capped by memory and a sane maximum.
-        val ref = images.first()
+        val ref = frames.first()
         val pxPerRad = (ref.width / 2.0) / ref.tanH
         val memCap = sqrt(maxMem * 0.30 / 4.0).toInt()  // 2 copies × W·(W/2)·4 bytes ≤ 30 % heap
         var outW = (2 * PI * pxPerRad).roundToInt()
@@ -45,7 +60,7 @@ object Stitcher {
         val outH = outW / 2
 
         val out = IntArray(outW * outH)
-        val core = StitchCore(images, session.yaw0)
+        val core = StitchCore(frames, session.yaw0)
         val chunk = 32
         val doneRows = AtomicInteger(0)
         coroutineScope {
@@ -54,7 +69,7 @@ object Stitcher {
                     val end = min(outH, start + chunk)
                     core.renderRows(outW, outH, start, end, out)
                     val d = doneRows.addAndGet(end - start)
-                    onProgress(0.25f + 0.7f * d / outH)
+                    onProgress(0.5f + 0.45f * d / outH)
                 }
             }.awaitAll()
         }

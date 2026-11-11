@@ -1,6 +1,8 @@
 package com.titipong.photocap360
 
 import kotlin.math.PI
+import kotlin.math.abs
+import kotlin.math.min
 import kotlin.math.atan
 import kotlin.math.cos
 import kotlin.math.sin
@@ -31,13 +33,18 @@ class FrameImage(
  * For every frame i whose axis is within its half-diagonal FOV of d:
  *   p = Rᵢᵀ·d,  depth = −p.z
  *   nx = p.x/depth / tanH,  ny = p.y/depth / tanV        (inside if |nx|,|ny| < 1)
- *   px = (nx+1)/2 · (w−1),  py = (1−ny)/2 · (h−1)         → bilinear sample
- *   weight = ((1−nx²)(1−ny²))^k                           (feather: centre counts most)
+ *   px = (nx+1)/2 · w − ½,  py = (1−ny)/2 · h − ½         → bilinear sample (pixel-centre convention)
+ *   margin = min((1−|nx|)·tanH, (1−|ny|)·tanV)            (≈ angular distance to the frame edge)
+ * Seam blending: the frame with the largest margin owns the pixel; other frames only blend in
+ * when their margin is within [seamBand] of the best:
+ *   t = (marginᵢ − best)/band + 1,   weight = smoothstep(clamp(t, 0, 1))
+ * This keeps every pixel from (mostly) one frame — no ghosting — with a narrow crossfade at seams.
  * Output = Σ weight·colour / Σ weight.  Pixels no frame sees get alpha 0.
  */
 class StitchCore(private val frames: List<FrameImage>, private val yaw0: Double) {
 
-    var featherPower = 3
+    /** Width of the crossfade at seams, in tan units (0.035 ≈ 2°). */
+    var seamBand = 0.035
 
     fun renderRows(outW: Int, outH: Int, rowStart: Int, rowEnd: Int, out: IntArray) {
         val sinH = DoubleArray(outW); val cosH = DoubleArray(outW)
@@ -46,12 +53,14 @@ class StitchCore(private val frames: List<FrameImage>, private val yaw0: Double)
             sinH[u] = sin(lon + yaw0); cosH[u] = cos(lon + yaw0)
         }
         val n = frames.size
+        val candF = IntArray(MAX_CAND); val candM = DoubleArray(MAX_CAND)
+        val candX = DoubleArray(MAX_CAND); val candY = DoubleArray(MAX_CAND)
         for (v in rowStart until rowEnd) {
             val lat = PI / 2 - (v + 0.5) / outH * PI
             val cl = cos(lat); val sl = sin(lat)
             for (u in 0 until outW) {
                 val dx = cl * sinH[u]; val dy = cl * cosH[u]; val dz = sl
-                var sr = 0.0; var sg = 0.0; var sb = 0.0; var sw = 0.0
+                var cnt = 0; var best = -1.0
                 for (i in 0 until n) {
                     val f = frames[i]
                     if (dx * f.fwdX + dy * f.fwdY + dz * f.fwdZ < f.cosCull) continue
@@ -64,14 +73,22 @@ class StitchCore(private val frames: List<FrameImage>, private val yaw0: Double)
                     val nx = px / depth / f.tanH
                     val ny = py / depth / f.tanV
                     if (nx <= -1 || nx >= 1 || ny <= -1 || ny >= 1) continue
-                    var w = (1 - nx * nx) * (1 - ny * ny)
-                    var k = featherPower
-                    val base = w
-                    while (k-- > 1) w *= base
-                    val c = sample(f, (nx + 1) / 2 * (f.width - 1), (1 - ny) / 2 * (f.height - 1))
-                    sr += w * ((c shr 16) and 0xFF)
-                    sg += w * ((c shr 8) and 0xFF)
-                    sb += w * (c and 0xFF)
+                    val m = min((1 - abs(nx)) * f.tanH, (1 - abs(ny)) * f.tanV)
+                    if (cnt < MAX_CAND) {
+                        candF[cnt] = i; candM[cnt] = m; candX[cnt] = nx; candY[cnt] = ny; cnt++
+                    }
+                    if (m > best) best = m
+                }
+                var sr = 0.0; var sg = 0.0; var sb = 0.0; var sw = 0.0
+                for (c in 0 until cnt) {
+                    val t = (candM[c] - best) / seamBand + 1
+                    if (t <= 0) continue
+                    val w = t * t * (3 - 2 * t)
+                    val f = frames[candF[c]]
+                    val col = sample(f, (candX[c] + 1) / 2 * f.width - 0.5, (1 - candY[c]) / 2 * f.height - 0.5)
+                    sr += w * ((col shr 16) and 0xFF)
+                    sg += w * ((col shr 8) and 0xFF)
+                    sb += w * (col and 0xFF)
                     sw += w
                 }
                 out[v * outW + u] = if (sw > 1e-12) {
@@ -84,7 +101,8 @@ class StitchCore(private val frames: List<FrameImage>, private val yaw0: Double)
         }
     }
 
-    private fun sample(f: FrameImage, x: Double, y: Double): Int {
+    private fun sample(f: FrameImage, xIn: Double, yIn: Double): Int {
+        val x = xIn.coerceIn(0.0, f.width - 1.0); val y = yIn.coerceIn(0.0, f.height - 1.0)
         val x0 = x.toInt().coerceIn(0, f.width - 1); val y0 = y.toInt().coerceIn(0, f.height - 1)
         val x1 = (x0 + 1).coerceAtMost(f.width - 1); val y1 = (y0 + 1).coerceAtMost(f.height - 1)
         val fx = x - x0; val fy = y - y0
@@ -106,6 +124,8 @@ class StitchCore(private val frames: List<FrameImage>, private val yaw0: Double)
     }
 
     companion object {
+        private const val MAX_CAND = 16
+
         /**
          * Fills uncovered pixels at the very top/bottom (zenith/nadir gaps) by stretching
          * the nearest covered pixel in each column, then makes everything opaque.

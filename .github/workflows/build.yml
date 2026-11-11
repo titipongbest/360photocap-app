@@ -2,7 +2,6 @@ name: Build APK
 
 on:
   push:
-    branches: [ main ]
   pull_request:
   workflow_dispatch:
 
@@ -17,10 +16,30 @@ jobs:
           java-version: 17
       - uses: gradle/actions/setup-gradle@v4
       - name: Unit tests
-        run: ./gradlew --no-daemon testDebugUnitTest
+        run: |
+          set -o pipefail
+          ./gradlew --no-daemon testDebugUnitTest 2>&1 | tee build.log
       - name: Build APK
         run: ./gradlew --no-daemon assembleRelease
+      - name: Report results
+        if: always()
+        run: |
+          grep -E "^e: " build.log | head -10 | sed 's/^/::error::/' || true
+          python3 - <<'EOF'
+          import glob, xml.etree.ElementTree as ET
+          for f in glob.glob('app/build/test-results/testDebugUnitTest/*.xml'):
+              root = ET.parse(f).getroot()
+              for tc in root.iter('testcase'):
+                  for fl in list(tc.iter('failure')) + list(tc.iter('error')):
+                      msg = (fl.get('message') or fl.text or '')[:600].replace('\n', ' ')
+                      print(f"::error title={tc.get('name')}::{msg}")
+              for so in root.iter('system-out'):
+                  for line in (so.text or '').splitlines():
+                      if line.startswith('STAT'):
+                          print(f"::notice::{line}")
+          EOF
       - uses: actions/upload-artifact@v4
+        if: success()
         with:
           name: 360PhotoCap-apk
           path: app/build/outputs/apk/release/*.apk

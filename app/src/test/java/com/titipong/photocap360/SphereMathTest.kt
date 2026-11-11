@@ -15,7 +15,7 @@ import kotlin.math.sin
 class SphereMathTest {
 
     /** Rotation (device → world) for a phone held upright, back camera looking at (yaw, pitch), with roll. */
-    private fun poseFor(yaw: Double, pitch: Double, roll: Double = 0.0): FloatArray {
+    internal fun poseFor(yaw: Double, pitch: Double, roll: Double = 0.0): FloatArray {
         val f = SphereMath.dirFromYawPitch(yaw, pitch)
         val worldUp = Vec3(0.0, 0.0, 1.0)
         var up = worldUp - f * f.dot(worldUp)
@@ -105,8 +105,8 @@ class SphereMathTest {
             val r = poseFor(yaw0 + t.yaw, t.pitch, 0.05)
             val px = IntArray(w * h)
             for (y in 0 until h) for (x in 0 until w) {
-                val nx = x.toDouble() / (w - 1) * 2 - 1
-                val ny = 1 - y.toDouble() / (h - 1) * 2
+                val nx = (x + 0.5) / w * 2 - 1
+                val ny = 1 - (y + 0.5) / h * 2
                 px[y * w + x] = scene(SphereMath.rotate(r, Vec3(nx * th, ny * tv, -1.0)).normalized())
             }
             FrameImage(px, w, h, r, th, tv)
