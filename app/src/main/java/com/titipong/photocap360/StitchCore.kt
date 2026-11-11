@@ -279,6 +279,21 @@ class StitchCore(private val frames: List<FrameImage>, private val yaw0: Double)
                 }
             }
             for (i in cnt.indices) if (cnt[i] > 0) { r[i] /= cnt[i]; g[i] /= cnt[i]; b[i] /= cnt[i] }
+            // Two [1 2 1]/4 passes per axis turn the blocky average into a near-Gaussian blur,
+            // so overlapping frames (with differently placed block grids) produce matching low-passes.
+            for (a in arrayOf(r, g, b)) repeat(2) { smooth(a) }
+        }
+
+        private fun smooth(a: FloatArray) {
+            val t = FloatArray(a.size)
+            for (y in 0 until h) for (x in 0 until w) {
+                val l = a[y * w + max(0, x - 1)]; val c = a[y * w + x]; val rr = a[y * w + min(w - 1, x + 1)]
+                t[y * w + x] = (l + 2 * c + rr) / 4
+            }
+            for (y in 0 until h) for (x in 0 until w) {
+                val u = t[max(0, y - 1) * w + x]; val c = t[y * w + x]; val d = t[min(h - 1, y + 1) * w + x]
+                a[y * w + x] = (u + 2 * c + d) / 4
+            }
         }
 
         fun sample(x: Double, y: Double, out: DoubleArray) {
@@ -351,8 +366,8 @@ class StitchCore(private val frames: List<FrameImage>, private val yaw0: Double)
         IntStream.range(0, frames.size).parallel().forEach { i ->
             val f = frames[i]
             val framePxPerDeg = (f.width / 2.0) / f.tanH * (PI / 180)
-            l1[i] = LowPass(f, max(2, (framePxPerDeg * LOW1_DEG + 0.5).toInt()))
-            l2[i] = LowPass(f, max(4, (framePxPerDeg * LOW2_DEG + 0.5).toInt()))
+            l1[i] = LowPass(f, max(2, (framePxPerDeg * LOW1_DEG / 2 + 0.5).toInt()))
+            l2[i] = LowPass(f, max(3, (framePxPerDeg * LOW2_DEG / 2 + 0.5).toInt()))
         }
         low1 = Array(frames.size) { l1[it]!! }
         low2 = Array(frames.size) { l2[it]!! }

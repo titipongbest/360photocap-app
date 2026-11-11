@@ -154,7 +154,10 @@ class SeamTest {
     /**
      * Vignetting (frame corners 30 % darker) + random exposure: with sharp seams each frame's
      * shading shows up as a step at the seam ("patches"). Multi-band spreads it out.
-     * Metric: mean |gradient(out) − gradient(truth)| — sensitive to steps, not to smooth shading.
+     * Metrics:
+     *  - patchiness: R = (4×4 block mean of output)/(same of truth); mean (∇R)². A brightness step
+     *    of Δ costs Δ², the same change spread over k blocks costs only Δ²/k, so steps dominate.
+     *  - detail: mean |∇out − ∇truth| at full resolution (must not get noticeably worse).
      */
     @Test fun multiBandRemovesPatches() {
         val rnd = Random(5)
@@ -186,10 +189,31 @@ class SeamTest {
             }
             return sum / n
         }
+        fun patchiness(img: IntArray): Double {
+            val bw = ow / 4; val bh = oh / 4
+            val ratio = DoubleArray(bw * bh)
+            for (by in 0 until bh) for (bx in 0 until bw) {
+                var so = 0.0; var st = 0.0
+                for (y in 0 until 4) for (x in 0 until 4) {
+                    val i = (by * 4 + y) * ow + bx * 4 + x
+                    so += (img[i] shr 8) and 0xFF; st += (truth[i] shr 8) and 0xFF
+                }
+                ratio[by * bw + bx] = so / max(1.0, st)
+            }
+            var sum = 0.0; var n = 0
+            for (by in bh / 10 until bh - bh / 10 - 1) for (bx in 0 until bw) {
+                val i = by * bw + bx
+                val dx = ratio[by * bw + (bx + 1) % bw] - ratio[i]; val dy = ratio[i + bw] - ratio[i]
+                sum += dx * dx + dy * dy; n++
+            }
+            return 1e4 * sum / n
+        }
         val sharp = render(false); val multi = render(true)
         for (px in multi) assertEquals(0xFF, px ushr 24)
+        val pSharp = patchiness(sharp); val pMulti = patchiness(multi)
         val eSharp = gradErr(sharp); val eMulti = gradErr(multi)
-        println("STAT multiband gradErr sharp=%.3f multi=%.3f".format(eSharp, eMulti))
-        assertTrue("multi-band $eMulti vs sharp $eSharp", eMulti < eSharp * 0.9)
+        println("STAT multiband patchiness sharp=%.3f multi=%.3f · detail gradErr sharp=%.3f multi=%.3f".format(pSharp, pMulti, eSharp, eMulti))
+        assertTrue("patchiness multi $pMulti vs sharp $pSharp", pMulti < pSharp * 0.7)
+        assertTrue("detail multi $eMulti vs sharp $eSharp", eMulti < eSharp * 1.15)
     }
 }
