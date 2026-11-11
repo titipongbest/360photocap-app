@@ -54,6 +54,7 @@ private object TestScene {
     fun render(
         r: FloatArray, th: Double, tv: Double, w: Int, h: Int,
         gain: Double = 1.0, camOffset: Double = 0.0, rho: Double = 1.0, vignette: Double = 0.0,
+        tiltX: Double = 0.0, tiltY: Double = 0.0,
     ): IntArray {
         val c = SphereMath.cameraForward(r) * camOffset
         val px = IntArray(w * h)
@@ -67,7 +68,7 @@ private object TestScene {
                 val t = -cd + sqrt(cd * cd - c.dot(c) + rho * rho)
                 v = foreground((c + d * t).normalized())
             }
-            val vig = 1 - vignette * (nx * nx + ny * ny) / 2
+            val vig = (1 - vignette * (nx * nx + ny * ny) / 2) * (1 + tiltX * nx + tiltY * ny)
             px[y * w + x] = gray(v ?: background(d), gain * vig)
         }
         return px
@@ -152,8 +153,8 @@ class SeamTest {
     }
 
     /**
-     * Vignetting (frame corners 30 % darker) + random exposure: with sharp seams each frame's
-     * shading shows up as a step at the seam ("patches"). Multi-band spreads it out.
+     * Random per-frame shading (vignetting 20–35 %, brightness tilt ±15 %, exposure ±8 %): with sharp
+     * seams each frame's shading shows up as a step at the seam ("patches"). Multi-band spreads it out.
      * Metrics:
      *  - patchiness: R = (4×4 block mean of output)/(same of truth); mean (∇R)². A brightness step
      *    of Δ costs Δ², the same change spread over k blocks costs only Δ²/k, so steps dominate.
@@ -162,8 +163,11 @@ class SeamTest {
     @Test fun multiBandRemovesPatches() {
         val rnd = Random(5)
         val frames = poses().map { r ->
+            // Per-frame uneven shading, like phone tone-mapping/HDR: gains alone can't remove it.
             val g = 0.92 + 0.16 * rnd.nextDouble()
-            FrameImage(TestScene.render(r, th, tv, 200, 267, gain = g, vignette = 0.3), 200, 267, r, th, tv)
+            val vig = 0.2 + 0.15 * rnd.nextDouble()
+            val tx = (rnd.nextDouble() - 0.5) * 0.3; val ty = (rnd.nextDouble() - 0.5) * 0.3
+            FrameImage(TestScene.render(r, th, tv, 200, 267, gain = g * 0.85, vignette = vig, tiltX = tx, tiltY = ty), 200, 267, r, th, tv)
         }
         val ow = 512; val oh = 256
         fun render(multi: Boolean): IntArray {
