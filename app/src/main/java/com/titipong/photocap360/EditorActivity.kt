@@ -337,7 +337,9 @@ class EditorActivity : ComponentActivity(), EditorView.Listener {
 
     private fun render(frames: List<FrameImage>, w: Int, seams: Boolean, paint: List<StitchCore.Paint>): Bitmap {
         val h = w / 2
-        val core = StitchCore(frames, yaw0).apply { multiBand = false; this.paint = paint }
+        val core = StitchCore(frames, yaw0).apply {
+            multiBand = false; this.paint = paint; rhoWall = state.rhoWall; kappa = state.kappa
+        }
         if (seams) core.prepare(w, h, maxLowWidth = w / 2)
         val out = IntArray(w * h)
         IntStream.range(0, (h + 15) / 16).parallel().forEach { c ->

@@ -134,6 +134,12 @@ object Stitcher {
                     if (align.fovEstimated) "ปรับ ×%.3f (ค่าจากกล้องคลาด: rms %.2f° → %.2f°)".format(align.fovScale, align.rmsFixedDeg, align.rmsFreeDeg)
                     else "ใช้ค่าจากกล้อง (ถ้าปรับ rms %.2f° → %.2f° ไม่คุ้ม ส่วนใหญ่เป็น parallax)".format(align.rmsFixedDeg, align.rmsFreeDeg))
             }
+            if (align.applied) {
+                diag.append("\n  ระดับน้ำ: เอียงจาก gyro สูงสุด %.2f°".format(align.maxTiltDeg))
+                diag.append("\n  โมเดลห้อง: ρ ผนัง %.3f · κ พื้น/เพดาน %.3f".format(align.rhoWall, align.kappa))
+                if (align.rhoWall > 0.005 && align.kappa > 0.005)
+                    diag.append(" (ถ้ากล้องห่างแกนหมุน 25 ซม.: ผนัง ≈ %.1f ม., พื้น/เพดาน ≈ %.1f ม.)".format(0.25 / align.rhoWall, 0.25 / align.kappa))
+            }
             if (!align.warpRmsBeforeDeg.isNaN()) {
                 diag.append("\n  บิดภาพเฉพาะจุด: ความคลาดที่จุดคู่ %.2f° → %.2f° (${align.warps.count { it != null }} ภาพ)"
                     .format(align.warpRmsBeforeDeg, align.warpRmsAfterDeg))
@@ -163,6 +169,7 @@ object Stitcher {
         // Remember the automatic result so the editor starts from it.
         if (manual == null) try {
             EditState(fovScale = if (align?.applied == true) align.fovScale else 1.0).apply {
+                if (align?.applied == true) { rhoWall = align.rhoWall; kappa = align.kappa }
                 for ((k, f) in frames.withIndex()) {
                     val name = used[k].file.name
                     rot[name] = f.r
@@ -182,6 +189,10 @@ object Stitcher {
 
         val out = IntArray(outW * outH)
         val core = StitchCore(frames, session.yaw0)
+        when {
+            manual != null -> { core.rhoWall = manual.rhoWall; core.kappa = manual.kappa }
+            align != null && align.applied -> { core.rhoWall = align.rhoWall; core.kappa = align.kappa }
+        }
         if (manual != null) {
             val index = used.withIndex().associate { it.value.file.name to it.index }
             core.paint = manual.strokes.mapNotNull { st ->

@@ -280,7 +280,7 @@ class SeamTest {
         val frames = poses().map { r ->
             FrameImage(TestScene.renderRoom(r, th, tv, 240, 320, camOffset = 0.2), 240, 320, r, th, tv)
         }
-        val res = Aligner(frames).run()
+        val res = Aligner(frames, parallaxModel = false).run()
         println("STAT mesh warp: applied=${res.applied} rms=%.3f° warp %.3f° → %.3f° (${res.warps.count { it != null }} frames)"
             .format(res.rmsDeg, res.warpRmsBeforeDeg, res.warpRmsAfterDeg))
         assertTrue(res.applied)
@@ -324,5 +324,35 @@ class SeamTest {
         println("STAT paint: auto=$auto (frame1=$gray1) painted=$painted (frame0=$gray0)")
         assertEquals(gray1, auto)
         assertEquals(gray0, painted)
+    }
+
+    /**
+     * Room with the camera 20 cm in front of the rotation centre and a drifting gyro.
+     * The room model must fit far better than rotation-only, stay level, and find plausible
+     * distances (walls 2–3 m → ρ ≈ 0.07–0.1; floor 1.3 m / ceiling 1.4 m → κ ≈ 0.15).
+     */
+    @Test fun roomModelFitsParallax() {
+        val rnd = Random(11)
+        var drift = 0.0
+        val truth = poses()
+        val frames = truth.map { r ->
+            drift += rnd.nextGaussian() * 0.8 * SphereMath.DEG
+            val pert = Rot.mul(Rot.exp(rnd.nextGaussian() * 0.003, rnd.nextGaussian() * 0.003, drift), Rot.ofFloat(r))
+            FrameImage(TestScene.renderRoom(r, th, tv, 240, 320, camOffset = 0.2), 240, 320, Rot.toFloat(pert), th, tv)
+        }
+        val plain = Aligner(frames, parallaxModel = false, meshWarp = false).run()
+        val room = Aligner(frames, meshWarp = false).run()
+        // Tilt of the result vs the truth (levelness), worst frame.
+        val tilt = truth.indices.maxOf { k ->
+            val p = Rot.log(Rot.mul(Rot.ofFloat(room.rotations[k]), Rot.t(Rot.ofFloat(truth[k]))))
+            sqrt(p[0] * p[0] + p[1] * p[1]) / SphereMath.DEG
+        }
+        println("STAT room model: rms plain=%.3f° room=%.3f° · ρ=%.3f κ=%.3f · tilt vs truth %.2f° · applied=${room.applied}"
+            .format(plain.rmsDeg, room.rmsDeg, room.rhoWall, room.kappa, tilt))
+        assertTrue(room.applied)
+        assertTrue("room model should fit much better", room.rmsDeg < 0.6 * plain.rmsDeg)
+        assertTrue("ρ ${room.rhoWall}", room.rhoWall in 0.04..0.14)
+        assertTrue("κ ${room.kappa}", room.kappa in 0.08..0.25)
+        assertTrue("stays level: $tilt°", tilt < 0.6)
     }
 }

@@ -67,14 +67,14 @@ class AlignerTest {
         }
         // k = how much too wide the FOV we "believe" is (1.03 → 3 % off)
         val w = 300; val h = 400
+        var yawDrift = 0.0
         val frames = truth.map { t ->
             val px = render(t, th, tv, w, h)
-            // gyro error: random axis, up to 2.5°
-            var ax = rnd.nextGaussian(); var ay = rnd.nextGaussian(); var az = rnd.nextGaussian()
-            val nrm = sqrt(ax * ax + ay * ay + az * az)
-            val ang = rnd.nextDouble() * 2.5 * deg
-            ax *= ang / nrm; ay *= ang / nrm; az *= ang / nrm
-            val pert = Rot.mul(Rot.exp(ax, ay, az), Rot.ofFloat(t))
+            // Realistic gyro error: heading drifts as a random walk (≈0.8° per shot), tilt stays
+            // within ±0.2° (gravity-referenced).
+            yawDrift += rnd.nextGaussian() * 0.8 * deg
+            val ax = rnd.nextGaussian() * 0.15 * deg; val ay = rnd.nextGaussian() * 0.15 * deg
+            val pert = Rot.mul(Rot.exp(ax, ay, yawDrift), Rot.ofFloat(t))
             FrameImage(px, w, h, Rot.toFloat(pert), th * k, tv * k)
         }
         return Setup(truth, frames, k, yaw0)

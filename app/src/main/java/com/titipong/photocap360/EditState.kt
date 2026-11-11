@@ -21,6 +21,9 @@ class EditState(
     val strokes: MutableList<Stroke> = ArrayList(),
     /** Frames the user moved by hand (their auto warp no longer fits and is dropped). */
     val moved: MutableSet<String> = LinkedHashSet(),
+    /** Room model (see StitchCore.rhoWall / kappa). */
+    var rhoWall: Double = 0.0,
+    var kappa: Double = 0.0,
 ) {
     fun copy() = EditState(
         fovScale,
@@ -28,6 +31,7 @@ class EditState(
         LinkedHashMap(warp.mapValues { it.value.copyOf() }),
         strokes.map { it.copy() }.toMutableList(),
         LinkedHashSet(moved),
+        rhoWall, kappa,
     )
 
     fun save(f: File) {
@@ -46,6 +50,7 @@ class EditState(
         })
         f.writeText(JSONObject().apply {
             put("fovScale", fovScale); put("frames", frames); put("strokes", st)
+            put("rhoWall", rhoWall); put("kappa", kappa)
         }.toString())
     }
 
@@ -57,6 +62,7 @@ class EditState(
             if (!f.exists()) null else {
                 val j = JSONObject(f.readText())
                 val e = EditState(j.optDouble("fovScale", 1.0))
+                e.rhoWall = j.optDouble("rhoWall", 0.0); e.kappa = j.optDouble("kappa", 0.0)
                 val frames = j.optJSONObject("frames") ?: JSONObject()
                 for (name in frames.keys()) {
                     val o = frames.getJSONObject(name)

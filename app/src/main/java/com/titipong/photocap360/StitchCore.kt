@@ -106,6 +106,14 @@ class StitchCore(private val frames: List<FrameImage>, private val yaw0: Double)
      */
     class Paint(val frame: Int, val radius: Double, val lonLat: DoubleArray)
 
+    /**
+     * Room model from the aligner (0 = plain rotating camera). The camera sits in front of the
+     * rotation centre; on the unit scene sphere the offset is ρ(d) = max(ρ_wall, κ·|d.z|), and a
+     * direction d is seen by a frame at p = Rᵀd + (0, 0, ρ(d)).
+     */
+    var rhoWall = 0.0
+    var kappa = 0.0
+
     /** Equalise exposure between frames in [prepare]. */
     var gainCompensation = true
 
@@ -144,13 +152,14 @@ class StitchCore(private val frames: List<FrameImage>, private val yaw0: Double)
         cf: IntArray, cm: DoubleArray, cx: DoubleArray, cy: DoubleArray,
     ): Int {
         var cnt = 0
+        val rho = if (rhoWall == 0.0 && kappa == 0.0) 0.0 else min(0.6, max(rhoWall, kappa * abs(dz)))
         for (i in frames.indices) {
             val f = frames[i]
             if (dx * f.fwdX + dy * f.fwdY + dz * f.fwdZ < f.cosCull) continue
             val r = f.r
             val px = r[0] * dx + r[3] * dy + r[6] * dz
             val py = r[1] * dx + r[4] * dy + r[7] * dz
-            val pz = r[2] * dx + r[5] * dy + r[8] * dz
+            val pz = r[2] * dx + r[5] * dy + r[8] * dz + rho
             val depth = -pz
             if (depth <= 1e-6) continue
             // Looking down past the nadir a frame sees the photographer's own legs: only use the
