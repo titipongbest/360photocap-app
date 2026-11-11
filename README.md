@@ -1,5 +1,7 @@
 # 360 PhotoCap
 
+By NorthXbar
+
 แอพ Android ถ่ายภาพ 360° แบบ photo sphere: แอพวางจุดเป้าบนทรงกลมรอบตัวผู้ใช้ ผู้ใช้หมุนกล้องเล็งตามจุด แอพถ่ายอัตโนมัติเมื่อเล็งตรงและถือนิ่ง แล้วต่อภาพเป็น panorama แบบ equirectangular (2:1) พร้อม metadata GPano ให้ Google Photos / Facebook เปิดเป็นภาพ 360 ได้
 
 ## ดาวน์โหลด APK

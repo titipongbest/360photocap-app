@@ -30,6 +30,8 @@ class IntroActivity : ComponentActivity() {
 
         back.setOnClickListener { if (page == 0) startCapture() else { page--; render() } }
         next.setOnClickListener { if (page == tips.lastIndex) startCapture() else { page++; render() } }
+        findViewById<TextView>(R.id.credit).text =
+            getString(R.string.app_name) + " v" + BuildConfig.VERSION_NAME + " · " + getString(R.string.credit)
         render()
     }
 

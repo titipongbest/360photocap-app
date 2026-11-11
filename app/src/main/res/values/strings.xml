@@ -50,4 +50,5 @@
     <string name="gyro_desc">ดูแบบ 360° ขยับมือถือเพื่อมองรอบๆ</string>
     <string name="gyro_on">โหมด 360°: ขยับมือถือเพื่อมองรอบๆ</string>
     <string name="gyro_off">โหมดลากนิ้ว</string>
+    <string name="credit">By NorthXbar</string>
 </resources>

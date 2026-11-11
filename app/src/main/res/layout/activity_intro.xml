@@ -61,4 +61,12 @@
             android:textColor="@android:color/black"
             android:textSize="18sp" />
     </LinearLayout>
+
+    <TextView
+        android:id="@+id/credit"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="16dp"
+        android:textColor="#66FFFFFF"
+        android:textSize="12sp" />
 </LinearLayout>
