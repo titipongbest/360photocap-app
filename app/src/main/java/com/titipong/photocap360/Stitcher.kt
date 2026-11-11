@@ -61,6 +61,18 @@ object Stitcher {
 
         val out = IntArray(outW * outH)
         val core = StitchCore(frames, session.yaw0)
+        onProgress(0.5f)
+        try {
+            core.prepare(outW, outH)
+            core.seamStats?.let {
+                Log.i("Stitch", "seams: energy %.0f → %.0f in %d passes, gains r=%s".format(
+                    it.seamEnergyBefore, it.seamEnergyAfter, it.passes,
+                    core.gains.joinToString(",") { g -> "%.3f".format(g[0]) }))
+            }
+        } catch (e: Throwable) {
+            Log.e("Stitch", "seam finding failed, using margin blending", e)
+        }
+        onProgress(0.6f)
         val chunk = 32
         val doneRows = AtomicInteger(0)
         coroutineScope {
@@ -69,7 +81,7 @@ object Stitcher {
                     val end = min(outH, start + chunk)
                     core.renderRows(outW, outH, start, end, out)
                     val d = doneRows.addAndGet(end - start)
-                    onProgress(0.5f + 0.45f * d / outH)
+                    onProgress(0.6f + 0.35f * d / outH)
                 }
             }.awaitAll()
         }
