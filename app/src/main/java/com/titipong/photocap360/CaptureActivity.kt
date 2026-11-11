@@ -269,7 +269,7 @@ class CaptureActivity : ComponentActivity() {
         val dir = File(filesDir, "sessions/${System.currentTimeMillis()}").apply { mkdirs() }
         session = CaptureSession(dir, tanLong, tanShort, yaw0)
         targets = SphereMath.buildTargets(
-            SphereMath.fovDeg(tanH), SphereMath.fovDeg(tanV), OVERLAP, includeNadir = true,
+            SphereMath.fovDeg(tanH), SphereMath.fovDeg(tanV), OVERLAP, includeNadir = false,
         )
         session!!.targetCount = targets.size
         targetDirs = targets.map { SphereMath.dirFromYawPitch(yaw0 + it.yaw, it.pitch) }

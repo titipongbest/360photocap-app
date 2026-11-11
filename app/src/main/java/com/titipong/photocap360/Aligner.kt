@@ -142,6 +142,10 @@ class Aligner(private val frames: List<FrameImage>, private val baseLongEdge: In
         val applied: Boolean,
         /** Inlier matches touching each frame (few → that frame is held only by the gyro). */
         val perFrame: IntArray = IntArray(0),
+        /** Why the result was not applied (empty when applied). */
+        val reason: String = "",
+        /** Largest correction applied to any frame relative to the gyroscope (deg). */
+        val maxDevDeg: Double = 0.0,
     )
 
     companion object {
@@ -149,9 +153,9 @@ class Aligner(private val frames: List<FrameImage>, private val baseLongEdge: In
         private val SEARCH = intArrayOf(2, 2, 16)        // per level, 0 = finest
         private val TPL = intArrayOf(7, 6, 5)
         private val MIN_NCC = doubleArrayOf(0.85, 0.7, 0.6)
-        private const val MIN_STD = 0.02
-        private const val GRID_X = 12
-        private const val GRID_Y = 16
+        private const val MIN_STD = 0.012
+        private const val GRID_X = 15
+        private const val GRID_Y = 20
         private const val HUBER = 0.004                  // rad ≈ 0.23°
         private const val PRIOR_W = 4e-4                 // ≈ (0.1° / 5.7°)²
         private const val SCALE_W = 4e-4
@@ -203,6 +207,7 @@ class Aligner(private val frames: List<FrameImage>, private val baseLongEdge: In
         IntStream.range(0, pairs.size).parallel().forEach { p ->
             val (i, j) = pairs[p]
             for (f in feats[i]!!) matchFeature(i, j, f[0], f[1])?.let { found += it }
+            for (f in feats[j]!!) matchFeature(j, i, f[0], f[1])?.let { found += it }
             progress(0.2f + 0.65f * done.incrementAndGet() / pairs.size)
         }
         val all = found.toList()
@@ -220,7 +225,14 @@ class Aligner(private val frames: List<FrameImage>, private val baseLongEdge: In
 
         val rms = sqrt(inl.sumOf { val e = residual(it, rot, sigma); e * e } / max(1, inl.size))
         val maxDev = (0 until n).maxOf { Rot.angle(Rot.mul(rot[it], Rot.t(rot0[it]))) }
-        val ok = inl.size >= 2 * n && rms < 1.0 * DEG && abs(sigma) < 0.15 && maxDev < 12 * DEG
+        // Gyro yaw drifts over a full turn, so large corrections are legitimate as long as the images
+        // agree (low rms). Only reject when the solution itself looks unreliable.
+        val reasons = ArrayList<String>()
+        if (inl.size < max(2 * n, 40)) reasons += "จุดที่ผ่านน้อย (${inl.size})"
+        if (rms >= 1.0 * DEG) reasons += "rms สูง %.2f°".format(rms / DEG)
+        if (abs(sigma) >= 0.15) reasons += "FOV เพี้ยน ×%.2f".format(exp(sigma))
+        if (maxDev >= 30 * DEG) reasons += "บางภาพต้องหมุน %.0f°".format(maxDev / DEG)
+        val ok = reasons.isEmpty()
         return Result(
             rotations = if (ok) rot.map { Rot.toFloat(it) } else frames.map { it.r },
             fovScale = if (ok) exp(sigma) else 1.0,
@@ -229,10 +241,13 @@ class Aligner(private val frames: List<FrameImage>, private val baseLongEdge: In
             rmsDeg = rms / DEG,
             applied = ok,
             perFrame = IntArray(n).also { c -> for (m in inl) { c[m.i]++; c[m.j]++ } },
+            reason = reasons.joinToString(", "),
+            maxDevDeg = maxDev / DEG,
         )
     }
 
-    private fun unchanged(matches: Int) = Result(frames.map { it.r }, 1.0, matches, 0, 0.0, false)
+    private fun unchanged(matches: Int) =
+        Result(frames.map { it.r }, 1.0, matches, 0, 0.0, false, reason = "จับคู่ได้น้อย ($matches จุด)")
 
     // ---------------- geometry ----------------
 
@@ -295,7 +310,7 @@ class Aligner(private val frames: List<FrameImage>, private val baseLongEdge: In
             if (lam > gmax) gmax = lam
         }
         val out = ArrayList<DoubleArray>()
-        for (c in best.indices) if (best[c] > 0.02f * gmax && best[c] > 1e-7f) out += doubleArrayOf(bx[c].toDouble(), by[c].toDouble())
+        for (c in best.indices) if (best[c] > 0.004f * gmax && best[c] > 1e-8f) out += doubleArrayOf(bx[c].toDouble(), by[c].toDouble())
         return out
     }
 

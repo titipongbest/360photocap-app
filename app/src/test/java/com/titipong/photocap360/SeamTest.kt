@@ -220,4 +220,16 @@ class SeamTest {
         assertTrue("patchiness multi $pMulti vs sharp $pSharp", pMulti < pSharp * 0.7)
         assertTrue("detail multi $eMulti vs sharp $eSharp", eMulti < eSharp * 1.15)
     }
+
+    @Test fun nadirPatchIsSmoothAndUniformAtPole() {
+        val w = 64; val h = 32
+        val rnd = Random(9)
+        // Covered except the bottom 6 rows (the floor under the photographer).
+        val out = IntArray(w * h) { i -> if (i / w < h - 6) TestScene.gray(0.3 + 0.4 * rnd.nextDouble()) else 0 }
+        StitchCore.fillPoles(out, w, h)
+        for (px in out) assertEquals(0xFF, px ushr 24)
+        val last = (h - 1) * w
+        val g = (0 until w).map { (out[last + it] shr 8) and 0xFF }
+        assertTrue("pole row should be one colour, spread ${g.max() - g.min()}", g.max() - g.min() <= 2)
+    }
 }

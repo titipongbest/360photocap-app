@@ -38,6 +38,27 @@ object Stitcher {
 
     private fun shutter(s: Double) = if (s >= 0.5) "%.1f".format(s) else "1/${(1 / s).roundToInt()}"
 
+    /**
+     * Final tone: scale so the 98th-percentile brightness reaches ~240 (white walls look white, not
+     * grey). Capped at ×1.3 and never darkens. Returns the factor applied (1.0 = unchanged).
+     */
+    private fun autoLevel(px: IntArray): Double {
+        val hist = IntArray(256)
+        var i = 0
+        while (i < px.size) {
+            val c = px[i]
+            hist[(77 * ((c shr 16) and 0xFF) + 150 * ((c shr 8) and 0xFF) + 29 * (c and 0xFF)) shr 8]++
+            i += 7
+        }
+        val total = hist.sum()
+        var acc = 0; var p98 = 255
+        for (v in 0..255) { acc += hist[v]; if (acc >= total * 0.98) { p98 = v; break } }
+        val k = (240.0 / max(1, p98)).coerceIn(1.0, 1.3)
+        if (k < 1.02) return 1.0
+        scalePixels(px, k)
+        return k
+    }
+
     /** Multiplies every channel by [g] (JPEG values, clamped). */
     private fun scalePixels(px: IntArray, g: Double) {
         for (i in px.indices) {
@@ -51,7 +72,10 @@ object Stitcher {
 
     suspend fun stitch(session: CaptureSession, onProgress: (Float) -> Unit): Result = withContext(Dispatchers.Default) {
         val maxMem = Runtime.getRuntime().maxMemory()
-        val n = session.frames.size
+        // The straight-down shot always contains the photographer's legs; skip it and fill the floor
+        // under the feet with a smooth patch instead (see StitchCore.fillPoles).
+        val used = session.frames.filter { SphereMath.cameraForward(it.rotation).z > -0.94 }
+        val n = used.size
         // Memory plan: frames get ~35 % of the heap, output buffer + bitmap ~30 %.
         val frameBudget = maxMem * 0.35
         val longEdge = sqrt(frameBudget / (n * 0.75 * 4)).toInt().coerceIn(640, 1600)
@@ -61,13 +85,15 @@ object Stitcher {
         fun lap(): String { val now = System.currentTimeMillis(); val d = now - tStage; tStage = now; return "%.1fs".format(d / 1000.0) }
         val times = ArrayList<String>()
 
-        diag.append("ภาพ: $n").append(if (session.targetCount > 0) "/${session.targetCount}" else "")
-        if (session.targetCount in 1..Int.MAX_VALUE && n < session.targetCount) diag.append(" (ขาด ${session.targetCount - n} → มีส่วนที่ไม่มีภาพ)")
+        val shot = session.frames.size
+        diag.append("ภาพ: $shot").append(if (session.targetCount > 0) "/${session.targetCount}" else "")
+        if (session.targetCount in 1..Int.MAX_VALUE && shot < session.targetCount) diag.append(" (ขาด ${session.targetCount - shot} → มีส่วนที่ไม่มีภาพ)")
+        if (shot > n) diag.append(" · ไม่ใช้ภาพพื้นใต้เท้า ${shot - n} ภาพ (เติมพื้นให้แทน)")
         diag.append("\nล็อกแสง: ").append(session.exposureMode.ifEmpty { "ไม่ทราบ (ถ่ายด้วยเวอร์ชันเก่า)" })
 
         val images = ArrayList<FrameImage>(n)
         val exposures = ArrayList<Exposure>(n)
-        for ((i, f) in session.frames.withIndex()) {
+        for ((i, f) in used.withIndex()) {
             images += loadFrame(f, longEdge, session.tanLong, session.tanShort)
             exposures += readExposure(f.file)
             onProgress(0.15f * (i + 1) / n)
@@ -97,10 +123,10 @@ object Stitcher {
         if (align != null) {
             Log.i("Stitch", "align: matches=${align.matches} inliers=${align.inliers} " +
                 "rms=%.3f° fovScale=%.4f applied=${align.applied}".format(align.rmsDeg, align.fovScale))
-            diag.append("\nจัดภาพ: ").append(if (align.applied) "ใช้ ✓" else "ไม่ใช้ → ใช้ gyroscope อย่างเดียว")
+            diag.append("\nจัดภาพ: ").append(if (align.applied) "ใช้ ✓" else "ไม่ใช้ (${align.reason}) → ใช้ gyroscope อย่างเดียว")
             diag.append(" · จุดจับคู่ ${align.matches} (ผ่าน ${align.inliers})")
-            if (align.inliers > 0) diag.append(" · rms %.2f° · FOV ×%.3f".format(align.rmsDeg, align.fovScale))
-            val weak = align.perFrame.withIndex().filter { it.value < 8 }.map { session.frames[it.index].targetIndex }
+            if (align.inliers > 0) diag.append(" · rms %.2f° · FOV ×%.3f · แก้ gyro สูงสุด %.1f°".format(align.rmsDeg, align.fovScale, align.maxDevDeg))
+            val weak = align.perFrame.withIndex().filter { it.value < 8 }.map { used[it.index].targetIndex }
             if (align.perFrame.isNotEmpty() && weak.isNotEmpty()) {
                 diag.append("\n  ภาพที่จับคู่ได้น้อย (<8 จุด): ${weak.size} ภาพ (เป้า #${weak.take(8).joinToString(", #")})")
             }
@@ -156,6 +182,8 @@ object Stitcher {
         val gaps = out.count { it ushr 24 == 0 }
         if (gaps > 0) diag.append("\nส่วนที่ไม่มีภาพ: %.1f%% (เติมด้วยสีขอบ)".format(100.0 * gaps / out.size))
         StitchCore.fillPoles(out, outW, outH)
+        val level = autoLevel(out)
+        if (level > 1.0) diag.append("\nปรับโทน: สว่างขึ้น ×%.2f".format(level))
         val bmp = Bitmap.createBitmap(out, outW, outH, Bitmap.Config.ARGB_8888)
         diag.append("\nขนาด ${outW}×$outH · เวลา: ${times.joinToString(" · ")}")
         val report = diag.toString()

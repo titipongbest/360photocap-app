@@ -88,6 +88,8 @@ class StitchCore(private val frames: List<FrameImage>, private val yaw0: Double)
     private var slotN: ByteArray? = null
     private var bandW1: FloatArray? = null
     private var bandW2: FloatArray? = null
+    /** 1 where a candidate frame shows the same thing as the owner, → 0 where it doesn't (parallax). */
+    private var slotAgree: FloatArray? = null
     private var low1: Array<LowPass>? = null
     private var low2: Array<LowPass>? = null
 
@@ -184,10 +186,31 @@ class StitchCore(private val frames: List<FrameImage>, private val yaw0: Double)
         val passes = field.optimize(sweeps)
         seamStats = SeamStats(before, field.seamEnergy(), passes)
         labels = field.lab
-        if (multiBand) buildBands(field, cF, cN)
+        if (multiBand) {
+            buildBands(field, cF, cN)
+            // Multi-band should only spread out *exposure* differences. Where two frames show
+            // different content (misalignment/parallax) mixing their low bands leaves a smudge,
+            // so fade those frames out of the wide bands.
+            val agree = FloatArray(total * k)
+            for (p in 0 until total) {
+                val owner = field.lab[p]
+                var oc = 0
+                for (c in 0 until cN[p].toInt()) if (cF[p * k + c] == owner) oc = cC[p * k + c]
+                for (c in 0 until cN[p].toInt()) {
+                    val d = if (oc == 0) 0 else colourDiff(oc, cC[p * k + c])
+                    agree[p * k + c] = (1f - (d - AGREE_OK) / AGREE_RANGE).coerceIn(0f, 1f)
+                }
+            }
+            slotAgree = agree
+        }
     }
 
     private fun clamp255(v: Double) = (v + 0.5).toInt().coerceIn(0, 255)
+
+    private fun colourDiff(a: Int, b: Int): Int =
+        (abs(((a shr 16) and 0xFF) - ((b shr 16) and 0xFF)) +
+            abs(((a shr 8) and 0xFF) - ((b shr 8) and 0xFF)) +
+            abs((a and 0xFF) - (b and 0xFF))) / 3
 
     private fun ramp(t: Double): Double { val c = t.coerceIn(0.0, 1.0); return c * c * (3 - 2 * c) }
 
@@ -422,6 +445,7 @@ class StitchCore(private val frames: List<FrameImage>, private val yaw0: Double)
         val wc1 = DoubleArray(MAX_CAND); val wc2 = DoubleArray(MAX_CAND)
         val t1 = DoubleArray(3); val t2 = DoubleArray(3)
         val bw1 = bandW1; val bw2 = bandW2; val sF = slotF; val sN = slotN; val lp1 = low1; val lp2 = low2
+        val ag = slotAgree
         val useBands = multiBand && lab != null && bw1 != null && bw2 != null && sF != null && sN != null && lp1 != null && lp2 != null
 
         for (v in rowStart until rowEnd) {
@@ -471,7 +495,8 @@ class StitchCore(private val frames: List<FrameImage>, private val yaw0: Double)
                         for (sl in 0 until sN!![q].toInt()) {
                             val fr = sF!![base + sl]
                             for (c in 0 until cnt) if (cf[c] == fr) {
-                                wc1[c] += w * bw1!![base + sl]; wc2[c] += w * bw2!![base + sl]; break
+                                val a = if (ag != null) ag[base + sl] else 1f
+                                wc1[c] += w * bw1!![base + sl] * a; wc2[c] += w * bw2!![base + sl] * a; break
                             }
                         }
                     }
@@ -803,23 +828,86 @@ class StitchCore(private val frames: List<FrameImage>, private val yaw0: Double)
         /** Margins (tan units) over which a frame's mid/low band fades in from its border. */
         private const val EDGE_RAMP1 = 0.02
         private const val EDGE_RAMP2 = 0.06
+        /** Colour difference (0–255) up to which frames count as showing the same thing, and fade range. */
+        private const val AGREE_OK = 14f
+        private const val AGREE_RANGE = 22f
         private const val NO_OVERLAP_COST = 120.0
 
         /**
-         * Fills uncovered pixels at the very top/bottom (zenith/nadir gaps) by stretching
-         * the nearest covered pixel in each column, then makes everything opaque.
+         * Fills the uncovered caps at the zenith/nadir (e.g. the floor under the photographer) with a
+         * smooth patch: from the coverage edge it blends quickly into the edge colours blurred around
+         * the circle, then into one average colour at the pole. Then makes everything opaque.
          */
         fun fillPoles(out: IntArray, w: Int, h: Int) {
-            for (u in 0 until w) {
-                var top = -1
-                for (v in 0 until h) if (out[v * w + u] ushr 24 != 0) { top = v; break }
-                if (top < 0) continue
-                for (v in 0 until top) out[v * w + u] = out[top * w + u]
-                var bot = -1
-                for (v in h - 1 downTo 0) if (out[v * w + u] ushr 24 != 0) { bot = v; break }
-                for (v in bot + 1 until h) out[v * w + u] = out[bot * w + u]
-            }
+            fillCap(out, w, h, top = true)
+            fillCap(out, w, h, top = false)
             for (i in out.indices) out[i] = out[i] or (0xFF shl 24)
+        }
+
+        private fun fillCap(out: IntArray, w: Int, h: Int, top: Boolean) {
+            val step = if (top) 1 else -1
+            val pole = if (top) 0 else h - 1
+            // First covered row per column, scanning from the pole.
+            val edge = IntArray(w) { -1 }
+            var any = false
+            for (u in 0 until w) {
+                var v = pole; var n = 0
+                while (n < h / 2 && out[v * w + u] ushr 24 == 0) { v += step; n++ }
+                if (n < h / 2) { edge[u] = v; if (n > 0) any = true }
+            }
+            if (!any) return
+            // Colour just inside the coverage edge (average of 6 rows), per column.
+            val er = DoubleArray(w); val eg = DoubleArray(w); val eb = DoubleArray(w)
+            var cr = 0.0; var cg = 0.0; var cb = 0.0; var cn = 0
+            for (u in 0 until w) {
+                if (edge[u] < 0) continue
+                var r = 0.0; var g = 0.0; var b = 0.0; var k = 0
+                for (i in 0 until 6) {
+                    val v = edge[u] + i * step
+                    if (v < 0 || v >= h) break
+                    val c = out[v * w + u]
+                    if (c ushr 24 == 0) continue
+                    r += (c shr 16) and 0xFF; g += (c shr 8) and 0xFF; b += c and 0xFF; k++
+                }
+                if (k == 0) continue
+                er[u] = r / k; eg[u] = g / k; eb[u] = b / k
+                cr += er[u]; cg += eg[u]; cb += eb[u]; cn++
+            }
+            if (cn == 0) return
+            cr /= cn; cg /= cn; cb /= cn
+            for (u in 0 until w) if (edge[u] < 0) { er[u] = cr; eg[u] = cg; eb[u] = cb }
+            // Blur edge colours around the circle (two box passes, radius w/32).
+            val rad = max(1, w / 32)
+            val br = er.copyOf(); val bg = eg.copyOf(); val bb = eb.copyOf()
+            repeat(2) { circularBox(br, rad); circularBox(bg, rad); circularBox(bb, rad) }
+            for (u in 0 until w) {
+                val e = if (edge[u] < 0) pole + step * (h / 2) else edge[u]
+                val span = abs(e - pole).coerceAtLeast(1)
+                var v = pole
+                while (v != e) {
+                    val t = abs(e - v).toDouble() / span          // 0 at the edge, 1 at the pole
+                    val a = smooth((t * 3).coerceAtMost(1.0))      // edge → blurred ring
+                    val c2 = smooth(t)                             // ring → pole colour
+                    fun mix(edgeV: Double, ring: Double, centre: Double) =
+                        ((edgeV + (ring - edgeV) * a) * (1 - c2) + centre * c2 + 0.5).toInt().coerceIn(0, 255)
+                    out[v * w + u] = (0xFF shl 24) or (mix(er[u], br[u], cr) shl 16) or
+                        (mix(eg[u], bg[u], cg) shl 8) or mix(eb[u], bb[u], cb)
+                    v += step
+                }
+            }
+        }
+
+        private fun smooth(t: Double) = t * t * (3 - 2 * t)
+
+        private fun circularBox(a: DoubleArray, r: Int) {
+            val n = a.size
+            val src = a.copyOf()
+            var s = 0.0
+            for (i in -r..r) s += src[((i % n) + n) % n]
+            for (i in 0 until n) {
+                a[i] = s / (2 * r + 1)
+                s += src[(i + r + 1) % n] - src[((i - r) % n + n) % n]
+            }
         }
     }
 }
