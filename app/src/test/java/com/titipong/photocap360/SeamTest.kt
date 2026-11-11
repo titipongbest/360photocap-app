@@ -42,6 +42,33 @@ private object TestScene {
         return if (m > 0.62) 0.8 * (0.15 + 0.7 * noise(d.x * 22 + 5, d.y * 22 + 5, d.z * 22 + 5)) else null
     }
 
+    /**
+     * A box room (x ∈ [−2, 2.5] m, y ∈ [−3, 2] m, floor −1.3 m, ceiling +1.4 m) seen from a camera
+     * [camOffset] metres in front of the rotation centre: every surface is near, parallax varies smoothly.
+     */
+    fun renderRoom(r: FloatArray, th: Double, tv: Double, w: Int, h: Int, camOffset: Double): IntArray {
+        val c = SphereMath.cameraForward(r) * camOffset
+        val lo = doubleArrayOf(-2.0, -3.0, -1.3); val hi = doubleArrayOf(2.5, 2.0, 1.4)
+        val px = IntArray(w * h)
+        for (y in 0 until h) for (x in 0 until w) {
+            val nx = (x + 0.5) / w * 2 - 1
+            val ny = 1 - (y + 0.5) / h * 2
+            val d = SphereMath.rotate(r, Vec3(nx * th, ny * tv, -1.0)).normalized()
+            val cc = doubleArrayOf(c.x, c.y, c.z); val dd = doubleArrayOf(d.x, d.y, d.z)
+            var t = Double.MAX_VALUE
+            for (a in 0..2) {
+                if (abs(dd[a]) < 1e-9) continue
+                val ta = ((if (dd[a] > 0) hi[a] else lo[a]) - cc[a]) / dd[a]
+                if (ta > 0 && ta < t) t = ta
+            }
+            val p = c + d * t
+            val v = 0.8 * (0.1 + 0.55 * noise(p.x * 4 + 50, p.y * 4 + 50, p.z * 4 + 50) +
+                0.35 * noise(p.x * 13 + 99, p.y * 13 + 99, p.z * 13 + 99))
+            px[y * w + x] = gray(v)
+        }
+        return px
+    }
+
     fun gray(v: Double, gain: Double = 1.0): Int {
         val g = (v * gain * 255).toInt().coerceIn(0, 255)
         return (0xFF shl 24) or (g shl 16) or (g shl 8) or g
@@ -248,10 +275,10 @@ class SeamTest {
         assertTrue("uncovered ${holes * 100.0 / out.size}%", holes < out.size * 0.02)
     }
 
-    /** Camera 20 cm in front of the rotation centre, objects at 0.9 m: the mesh warp must cut the leftover error. */
+    /** Camera 20 cm in front of the rotation centre inside a small room: the mesh warp must cut the leftover error. */
     @Test fun meshWarpReducesParallax() {
         val frames = poses().map { r ->
-            FrameImage(TestScene.render(r, th, tv, 240, 320, camOffset = 0.2, rho = 0.9), 240, 320, r, th, tv)
+            FrameImage(TestScene.renderRoom(r, th, tv, 240, 320, camOffset = 0.2), 240, 320, r, th, tv)
         }
         val res = Aligner(frames).run()
         println("STAT mesh warp: applied=${res.applied} rms=%.3f° warp %.3f° → %.3f° (${res.warps.count { it != null }} frames)"
