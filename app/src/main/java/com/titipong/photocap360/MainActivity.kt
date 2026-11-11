@@ -20,6 +20,7 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
+        padForSystemBars()
         step = findViewById(R.id.step)
         tip = findViewById(R.id.tip)
         back = findViewById(R.id.back)
