@@ -62,19 +62,12 @@
             android:id="@+id/undo"
             android:layout_width="wrap_content"
             android:layout_height="44dp"
-            android:layout_marginEnd="8dp"
+            android:minHeight="0dp"
+            android:paddingVertical="0dp"
             android:background="@drawable/btn_outline"
             android:paddingHorizontal="16dp"
             android:text="@string/undo"
             android:textColor="@android:color/white" />
 
-        <Button
-            android:id="@+id/finish"
-            android:layout_width="wrap_content"
-            android:layout_height="44dp"
-            android:background="@drawable/btn_primary"
-            android:paddingHorizontal="20dp"
-            android:text="@string/finish"
-            android:textColor="@android:color/black" />
     </LinearLayout>
 </FrameLayout>

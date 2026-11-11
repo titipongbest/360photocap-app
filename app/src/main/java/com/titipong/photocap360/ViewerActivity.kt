@@ -46,7 +46,6 @@ class ViewerActivity : ComponentActivity() {
     private var dir: File? = null
     private var uri: Uri? = null
     private var viewer: PanoViewerView? = null
-    private var gyroButton: Button? = null
 
     private val deleteRequest = registerForActivityResult(ActivityResultContracts.StartIntentSenderForResult()) {
         if (it.resultCode == RESULT_OK) finish()
@@ -127,6 +126,7 @@ class ViewerActivity : ComponentActivity() {
         val copy = Button(this).apply {
             setText(R.string.copy); textSize = 13f; isAllCaps = false
             setTextColor(Color.BLACK); setBackgroundResource(R.drawable.btn_primary)
+            compactButton()
             setOnClickListener {
                 val cm = getSystemService(CLIPBOARD_SERVICE) as ClipboardManager
                 cm.setPrimaryClip(ClipData.newPlainText("360 PhotoCap", infoText))
@@ -134,7 +134,7 @@ class ViewerActivity : ComponentActivity() {
             }
         }
         panel.addView(text, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
-        panel.addView(copy, LinearLayout.LayoutParams(WRAP_CONTENT, 110).apply { topMargin = 20; gravity = Gravity.END })
+        panel.addView(copy, LinearLayout.LayoutParams(WRAP_CONTENT, dp(40f)).apply { topMargin = dp(8f); gravity = Gravity.END })
         root.addView(panel, FrameLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT, Gravity.TOP).apply { topMargin = 96 })
 
         val bar = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER; setPadding(24, 24, 24, 32) }
@@ -142,6 +142,7 @@ class ViewerActivity : ComponentActivity() {
             setText(label); textSize = 14f; isAllCaps = false
             setTextColor(if (primary) Color.BLACK else Color.WHITE)
             setBackgroundResource(if (primary) R.drawable.btn_primary else R.drawable.btn_outline)
+            compactButton()
             setOnClickListener { onClick() }
         }
         val buttons = ArrayList<Button>()
@@ -154,27 +155,32 @@ class ViewerActivity : ComponentActivity() {
         buttons += button(R.string.delete) { confirmDelete() }
         buttons += button(R.string.share, primary = true) { share() }
         for ((i, b) in buttons.withIndex()) {
-            bar.addView(b, LinearLayout.LayoutParams(0, 130, 1f).apply { if (i < buttons.lastIndex) marginEnd = 16 })
+            bar.addView(b, LinearLayout.LayoutParams(0, dp(46f), 1f).apply { if (i < buttons.lastIndex) marginEnd = dp(8f) })
         }
         root.addView(bar, FrameLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT, Gravity.BOTTOM))
 
-        // Gyro toggle (top right): move the phone to look around.
-        val modes = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; setPadding(16, 16, 16, 16) }
-        val gyroBtn = button(R.string.gyro) {
-            v.gyro = !v.gyro
-            gyroButton?.let { styleToggle(it, v.gyro) }
+        // 360° toggle (top right): move the phone to look around (gyro).
+        val gyroBtn = android.widget.ImageButton(this).apply {
+            setImageResource(R.drawable.ic_360)
+            contentDescription = getString(R.string.gyro_desc)
+            scaleType = android.widget.ImageView.ScaleType.FIT_CENTER
+            setPadding(dp(8f), dp(8f), dp(8f), dp(8f))
+            setOnClickListener {
+                v.gyro = !v.gyro
+                styleToggle(this, v.gyro)
+                Toast.makeText(this@ViewerActivity, if (v.gyro) R.string.gyro_on else R.string.gyro_off, Toast.LENGTH_SHORT).show()
+            }
         }
-        gyroButton = gyroBtn
         styleToggle(gyroBtn, false)
         if (!v.hasGyro) { gyroBtn.isEnabled = false; gyroBtn.alpha = 0.4f }
-        modes.addView(gyroBtn, LinearLayout.LayoutParams(200, 110))
-        root.addView(modes, FrameLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT, Gravity.TOP or Gravity.END).apply { topMargin = 72 })
-
+        root.addView(gyroBtn, FrameLayout.LayoutParams(dp(52f), dp(52f), Gravity.TOP or Gravity.END).apply {
+            topMargin = dp(40f); marginEnd = dp(12f)
+        })
     }
 
-    private fun styleToggle(b: Button, on: Boolean) {
-        b.setBackgroundResource(if (on) R.drawable.btn_primary else R.drawable.btn_outline)
-        b.setTextColor(if (on) Color.BLACK else Color.WHITE)
+    private fun styleToggle(b: android.widget.ImageButton, on: Boolean) {
+        b.setBackgroundResource(if (on) R.drawable.btn_primary else R.drawable.btn_outline_round)
+        b.setColorFilter(if (on) Color.BLACK else Color.WHITE)
     }
 
     private fun share() {

@@ -15,7 +15,6 @@
     <string name="skip">ข้าม</string>
 
     <string name="undo">ลบภาพล่าสุด</string>
-    <string name="finish">ต่อภาพ</string>
 
     <string name="hint_aim">เล็งวงกลมขาวไปที่จุดเขียว</string>
     <string name="hint_hold">ถือนิ่งๆ…</string>
@@ -48,5 +47,7 @@
     <string name="delete_file_confirm">ลบภาพนี้ออกจากเครื่อง?</string>
     <string name="delete_failed">ลบไม่ได้</string>
     <string name="edit">แก้ไข</string>
-    <string name="gyro">Gyro</string>
+    <string name="gyro_desc">ดูแบบ 360° ขยับมือถือเพื่อมองรอบๆ</string>
+    <string name="gyro_on">โหมด 360°: ขยับมือถือเพื่อมองรอบๆ</string>
+    <string name="gyro_off">โหมดลากนิ้ว</string>
 </resources>

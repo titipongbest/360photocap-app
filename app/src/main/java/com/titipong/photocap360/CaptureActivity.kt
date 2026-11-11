@@ -130,7 +130,6 @@ class CaptureActivity : ComponentActivity() {
         counter = findViewById(R.id.counter)
         findViewById<ImageButton>(R.id.close).setOnClickListener { finish() }
         findViewById<Button>(R.id.undo).setOnClickListener { undo() }
-        findViewById<Button>(R.id.finish).setOnClickListener { finishCapture() }
 
         tracker = OrientationTracker(getSystemService(SENSOR_SERVICE) as SensorManager)
         if (!tracker.available) { toast(R.string.no_sensor); finish(); return }

@@ -76,11 +76,12 @@ class EditorActivity : ComponentActivity(), EditorView.Listener {
             this.text = text; textSize = 13f; isAllCaps = false
             setTextColor(if (primary) Color.BLACK else Color.WHITE)
             setBackgroundResource(if (primary) R.drawable.btn_primary else R.drawable.btn_outline)
+            compactButton()
             setOnClickListener { onClick() }
         }
         fun row(vararg bs: Button) = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER; setPadding(16, 8, 16, 8)
-            for ((i, b) in bs.withIndex()) addView(b, LinearLayout.LayoutParams(0, 120, 1f).apply { if (i < bs.lastIndex) marginEnd = 12 })
+            for ((i, b) in bs.withIndex()) addView(b, LinearLayout.LayoutParams(0, dp(44f), 1f).apply { if (i < bs.lastIndex) marginEnd = dp(6f) })
         }
         btnMove = button("เลื่อนภาพ") { setMode(Mode.MOVE) }
         btnPaint = button("ระบาย") { setMode(Mode.PAINT) }
