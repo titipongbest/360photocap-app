@@ -11,8 +11,12 @@ android {
         applicationId = "com.titipong.photocap360"
         minSdk = 26
         targetSdk = 35
-        versionCode = 1
-        versionName = "0.1.0"
+        // CI builds: version 0.2.<run number> so every build installs over the previous one.
+        val ciRun = System.getenv("GITHUB_RUN_NUMBER")?.toIntOrNull()
+        val gitSha = System.getenv("GITHUB_SHA")?.take(7) ?: "local"
+        versionCode = ciRun ?: 1
+        versionName = if (ciRun != null) "0.2.$ciRun" else "0.2.0-dev"
+        buildConfigField("String", "GIT_SHA", "\"$gitSha\"")
     }
 
     buildTypes {
@@ -32,6 +36,7 @@ android {
     }
     buildFeatures {
         viewBinding = false
+        buildConfig = true
     }
 }
 

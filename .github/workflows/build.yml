@@ -5,6 +5,9 @@ on:
   pull_request:
   workflow_dispatch:
 
+permissions:
+  contents: write   # publish releases with the APK (direct download link, no login needed)
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -15,17 +18,25 @@ jobs:
           distribution: temurin
           java-version: 17
       - uses: gradle/actions/setup-gradle@v4
+      - name: Version
+        id: ver
+        run: echo "name=0.2.${{ github.run_number }}" >> "$GITHUB_OUTPUT"
       - name: Unit tests
         run: |
           set -o pipefail
           ./gradlew --no-daemon testDebugUnitTest 2>&1 | tee build.log
       - name: Build APK
         run: ./gradlew --no-daemon assembleRelease
+      - name: Name APK
+        run: |
+          mkdir -p dist
+          cp app/build/outputs/apk/release/app-release.apk "dist/360PhotoCap-v${{ steps.ver.outputs.name }}.apk"
+          cp app/build/outputs/apk/release/app-release.apk dist/360PhotoCap.apk
       - name: Report results
         if: always()
         run: |
           grep -E "^e: " build.log | head -10 | sed 's/^/::error::/' || true
-          python3 - <<'EOF'
+          python3 - <<'PY'
           import glob, xml.etree.ElementTree as ET
           for f in glob.glob('app/build/test-results/testDebugUnitTest/*.xml'):
               root = ET.parse(f).getroot()
@@ -37,9 +48,19 @@ jobs:
                   for line in (so.text or '').splitlines():
                       if line.startswith('STAT'):
                           print(f"::notice::{line}")
-          EOF
+          PY
       - uses: actions/upload-artifact@v4
         if: success()
         with:
-          name: 360PhotoCap-apk
-          path: app/build/outputs/apk/release/*.apk
+          name: 360PhotoCap-v${{ steps.ver.outputs.name }}
+          path: dist/360PhotoCap-v${{ steps.ver.outputs.name }}.apk
+      - name: Release
+        if: success() && github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ steps.ver.outputs.name }}
+          name: v${{ steps.ver.outputs.name }}
+          body: ${{ github.event.head_commit.message }}
+          files: |
+            dist/360PhotoCap-v${{ steps.ver.outputs.name }}.apk
+            dist/360PhotoCap.apk

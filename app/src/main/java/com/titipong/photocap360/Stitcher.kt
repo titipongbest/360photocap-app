@@ -86,6 +86,7 @@ object Stitcher {
         val times = ArrayList<String>()
 
         val shot = session.frames.size
+        diag.append("แอพ v${BuildConfig.VERSION_NAME} (${BuildConfig.GIT_SHA})\n")
         diag.append("ภาพ: $shot").append(if (session.targetCount > 0) "/${session.targetCount}" else "")
         if (session.targetCount in 1..Int.MAX_VALUE && shot < session.targetCount) diag.append(" (ขาด ${session.targetCount - shot} → มีส่วนที่ไม่มีภาพ)")
         if (shot > n) diag.append(" · ไม่ใช้ภาพพื้นใต้เท้า ${shot - n} ภาพ (เติมพื้นให้แทน)")

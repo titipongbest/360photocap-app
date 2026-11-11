@@ -43,6 +43,7 @@ class MainActivity : ComponentActivity() {
         setContentView(R.layout.activity_main)
         padForSystemBars()
         empty = findViewById(R.id.empty)
+        findViewById<TextView>(R.id.version).text = "v${BuildConfig.VERSION_NAME} · ${BuildConfig.GIT_SHA}"
         findViewById<RecyclerView>(R.id.list).apply {
             layoutManager = LinearLayoutManager(this@MainActivity)
             adapter = this@MainActivity.adapter
