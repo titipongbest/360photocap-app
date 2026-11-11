@@ -3,6 +3,7 @@ package com.titipong.photocap360
 import android.content.Intent
 import android.os.Bundle
 import android.widget.Button
+import android.widget.ImageView
 import android.widget.TextView
 import androidx.activity.ComponentActivity
 
@@ -10,6 +11,7 @@ import androidx.activity.ComponentActivity
 class IntroActivity : ComponentActivity() {
 
     private val tips = intArrayOf(R.string.tip1, R.string.tip2, R.string.tip3, R.string.tip4)
+    private val pictures = intArrayOf(R.drawable.tip_space, R.drawable.tip_chest, R.drawable.tip_turn, R.drawable.tip_aim)
     private var page = 0
 
     private lateinit var step: TextView
@@ -34,6 +36,7 @@ class IntroActivity : ComponentActivity() {
     private fun render() {
         step.text = "${page + 1} / ${tips.size}"
         tip.setText(tips[page])
+        findViewById<ImageView>(R.id.illustration).setImageResource(pictures[page])
         back.setText(if (page == 0) R.string.skip else R.string.back)
         next.setText(if (page == tips.lastIndex) R.string.start else R.string.next)
     }

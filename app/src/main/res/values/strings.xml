@@ -48,4 +48,5 @@
     <string name="delete_file_confirm">ลบภาพนี้ออกจากเครื่อง?</string>
     <string name="delete_failed">ลบไม่ได้</string>
     <string name="edit">แก้ไข</string>
+    <string name="gyro">Gyro</string>
 </resources>

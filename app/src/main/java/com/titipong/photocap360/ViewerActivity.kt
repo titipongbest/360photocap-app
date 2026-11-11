@@ -46,6 +46,7 @@ class ViewerActivity : ComponentActivity() {
     private var dir: File? = null
     private var uri: Uri? = null
     private var viewer: PanoViewerView? = null
+    private var gyroButton: Button? = null
 
     private val deleteRequest = registerForActivityResult(ActivityResultContracts.StartIntentSenderForResult()) {
         if (it.resultCode == RESULT_OK) finish()
@@ -156,6 +157,24 @@ class ViewerActivity : ComponentActivity() {
             bar.addView(b, LinearLayout.LayoutParams(0, 130, 1f).apply { if (i < buttons.lastIndex) marginEnd = 16 })
         }
         root.addView(bar, FrameLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT, Gravity.BOTTOM))
+
+        // Gyro toggle (top right): move the phone to look around.
+        val modes = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; setPadding(16, 16, 16, 16) }
+        val gyroBtn = button(R.string.gyro) {
+            v.gyro = !v.gyro
+            gyroButton?.let { styleToggle(it, v.gyro) }
+        }
+        gyroButton = gyroBtn
+        styleToggle(gyroBtn, false)
+        if (!v.hasGyro) { gyroBtn.isEnabled = false; gyroBtn.alpha = 0.4f }
+        modes.addView(gyroBtn, LinearLayout.LayoutParams(200, 110))
+        root.addView(modes, FrameLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT, Gravity.TOP or Gravity.END).apply { topMargin = 72 })
+
+    }
+
+    private fun styleToggle(b: Button, on: Boolean) {
+        b.setBackgroundResource(if (on) R.drawable.btn_primary else R.drawable.btn_outline)
+        b.setTextColor(if (on) Color.BLACK else Color.WHITE)
     }
 
     private fun share() {
