@@ -296,4 +296,33 @@ class SeamTest {
         println("STAT free FOV in room: scale=%.4f applied=${res.applied} maxDev=%.2f°".format(res.fovScale, res.maxDevDeg))
         assertTrue("scale ${res.fovScale}", res.fovScale in 0.9..1.11)
     }
+
+    /** Painting a spot with frame 0 must make the output there come from frame 0, not its neighbour. */
+    @Test fun paintForcesFrame() {
+        val targets = SphereMath.buildTargets(hFov, vFov, 0.35)
+        val frames = targets.mapIndexed { k, t ->
+            val r = SphereMathTest().poseFor(yaw0 + t.yaw, t.pitch)
+            val g = 20 + (k * 37) % 220
+            FrameImage(IntArray(60 * 80) { (0xFF shl 24) or (g shl 16) or (g shl 8) or g }, 60, 80, r, th, tv)
+        }
+        val gray0 = 20
+        val gray1 = 20 + 37 % 220
+        // Horizon, 20° to the right of frame 0's centre: frame 1 (30° right) is more central there.
+        val lon = yaw0 + 20 * SphereMath.DEG; val lat = 0.0
+        val ow = 256; val oh = 128
+        val u = ((lon - yaw0 + PI) / (2 * PI) * ow).toInt(); val v = ((PI / 2 - lat) / PI * oh).toInt()
+        fun renderWith(paint: List<StitchCore.Paint>): Int {
+            val core = StitchCore(frames, yaw0)
+            core.multiBand = false; core.gainCompensation = false; core.paint = paint
+            core.prepare(ow, oh)
+            val out = IntArray(ow * oh)
+            core.renderRows(ow, oh, 0, oh, out)
+            return (out[v * ow + u] shr 8) and 0xFF
+        }
+        val auto = renderWith(emptyList())
+        val painted = renderWith(listOf(StitchCore.Paint(0, 4 * SphereMath.DEG, doubleArrayOf(lon, lat))))
+        println("STAT paint: auto=$auto (frame1=$gray1) painted=$painted (frame0=$gray0)")
+        assertEquals(gray1, auto)
+        assertEquals(gray0, painted)
+    }
 }

@@ -106,6 +106,9 @@ class StitchCore(private val frames: List<FrameImage>, private val yaw0: Double)
      */
     class Paint(val frame: Int, val radius: Double, val lonLat: DoubleArray)
 
+    /** Equalise exposure between frames in [prepare]. */
+    var gainCompensation = true
+
     /** Manual overrides for [prepare] (empty = fully automatic seams). */
     var paint: List<Paint> = emptyList()
 
@@ -219,7 +222,7 @@ class StitchCore(private val frames: List<FrameImage>, private val yaw0: Double)
             }
         }
 
-        computeGains(cF, cC, cN, k, total)
+        if (gainCompensation) computeGains(cF, cC, cN, k, total)
         for (p in 0 until total) for (c in 0 until cN[p].toInt()) {
             val g = gains[cF[p * k + c]]
             val col = cC[p * k + c]
