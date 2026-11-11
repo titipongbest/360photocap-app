@@ -43,4 +43,8 @@
     <string name="delete_confirm">ลบภาพ 360° นี้และภาพถ่ายต้นฉบับทั้งหมด?</string>
     <string name="cancel">ยกเลิก</string>
     <string name="no_info">ไม่มีข้อมูลวินิจฉัย (ต่อภาพด้วยเวอร์ชันเก่า) กด "ต่อภาพใหม่" เพื่อสร้าง</string>
+    <string name="copy">คัดลอก</string>
+    <string name="copied">คัดลอกข้อมูลแล้ว</string>
+    <string name="delete_file_confirm">ลบภาพนี้ออกจากเครื่อง?</string>
+    <string name="delete_failed">ลบไม่ได้</string>
 </resources>
