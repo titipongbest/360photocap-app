@@ -232,4 +232,31 @@ class SeamTest {
         val g = (0 until w).map { (out[last + it] shr 8) and 0xFF }
         assertTrue("pole row should be one colour, spread ${g.max() - g.min()}", g.max() - g.min() <= 2)
     }
+
+    /** New capture layout: no nadir shot, lower row tilted down, 4 floor shots at −72°. */
+    @Test fun floorRingCoversNearlyEverything() {
+        val targets = SphereMath.buildTargets(hFov, vFov, 0.35, includeNadir = false, lowerExtraDeg = 6.0, floorRingDeg = 72.0)
+        val frames = targets.map {
+            val r = SphereMathTest().poseFor(yaw0 + it.yaw, it.pitch)
+            FrameImage(TestScene.render(r, th, tv, 80, 107), 80, 107, r, th, tv)
+        }
+        val ow = 256; val oh = 128
+        val out = IntArray(ow * oh)
+        StitchCore(frames, yaw0).renderRows(ow, oh, 0, oh, out)
+        val holes = out.count { it ushr 24 == 0 }
+        println("STAT floor ring: ${targets.size} shots, uncovered %.2f%%".format(100.0 * holes / out.size))
+        assertTrue("uncovered ${holes * 100.0 / out.size}%", holes < out.size * 0.02)
+    }
+
+    /** Camera 20 cm in front of the rotation centre, objects at 0.9 m: the mesh warp must cut the leftover error. */
+    @Test fun meshWarpReducesParallax() {
+        val frames = poses().map { r ->
+            FrameImage(TestScene.render(r, th, tv, 240, 320, camOffset = 0.2, rho = 0.9), 240, 320, r, th, tv)
+        }
+        val res = Aligner(frames).run()
+        println("STAT mesh warp: applied=${res.applied} rms=%.3f° warp %.3f° → %.3f° (${res.warps.count { it != null }} frames)"
+            .format(res.rmsDeg, res.warpRmsBeforeDeg, res.warpRmsAfterDeg))
+        assertTrue(res.applied)
+        assertTrue("warp should reduce the error", res.warpRmsAfterDeg < res.warpRmsBeforeDeg * 0.7)
+    }
 }

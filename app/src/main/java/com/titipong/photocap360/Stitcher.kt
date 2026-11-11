@@ -74,7 +74,7 @@ object Stitcher {
         val maxMem = Runtime.getRuntime().maxMemory()
         // The straight-down shot always contains the photographer's legs; skip it and fill the floor
         // under the feet with a smooth patch instead (see StitchCore.fillPoles).
-        val used = session.frames.filter { SphereMath.cameraForward(it.rotation).z > -0.94 }
+        val used = session.frames.filter { SphereMath.cameraForward(it.rotation).z > -0.985 }
         val n = used.size
         // Memory plan: frames get ~35 % of the heap, output buffer + bitmap ~30 %.
         val frameBudget = maxMem * 0.35
@@ -131,6 +131,10 @@ object Stitcher {
                     if (align.fovEstimated) "ปรับ ×%.3f (ค่าจากกล้องคลาด: rms %.2f° → %.2f°)".format(align.fovScale, align.rmsFixedDeg, align.rmsFreeDeg)
                     else "ใช้ค่าจากกล้อง (ถ้าปรับ rms %.2f° → %.2f° ไม่คุ้ม ส่วนใหญ่เป็น parallax)".format(align.rmsFixedDeg, align.rmsFreeDeg))
             }
+            if (!align.warpRmsBeforeDeg.isNaN()) {
+                diag.append("\n  บิดภาพเฉพาะจุด: ความคลาดที่จุดคู่ %.2f° → %.2f° (${align.warps.count { it != null }} ภาพ)"
+                    .format(align.warpRmsBeforeDeg, align.warpRmsAfterDeg))
+            }
             val weak = align.perFrame.withIndex().filter { it.value < 8 }.map { used[it.index].targetIndex }
             if (align.perFrame.isNotEmpty() && weak.isNotEmpty()) {
                 diag.append("\n  ภาพที่จับคู่ได้น้อย (<8 จุด): ${weak.size} ภาพ (เป้า #${weak.take(8).joinToString(", #")})")
@@ -138,7 +142,8 @@ object Stitcher {
         } else diag.append("\nจัดภาพ: ผิดพลาด → ใช้ gyroscope อย่างเดียว")
         times += "จัดภาพ ${lap()}"
         val frames = if (align != null && align.applied) images.mapIndexed { k, f ->
-            FrameImage(f.pixels, f.width, f.height, align.rotations[k], f.tanH * align.fovScale, f.tanV * align.fovScale)
+            FrameImage(f.pixels, f.width, f.height, align.rotations[k], f.tanH * align.fovScale, f.tanV * align.fovScale,
+                warp = align.warps.getOrNull(k))
         } else images
 
         // Output width = horizon pixel density × 360°, capped by memory and a sane maximum.

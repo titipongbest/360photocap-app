@@ -5,7 +5,9 @@
     <string name="tip1">ยืนห่างจากวัตถุหรือผนังรอบตัวอย่างน้อย 1 เมตร</string>
     <string name="tip2">ถือโทรศัพท์แนวตั้ง ชิดหน้าอก</string>
     <string name="tip3">ยืนอยู่กับที่ แล้วหมุนตัวรอบจุดเดิม</string>
-    <string name="tip4">เล็งวงกลมสีขาวให้ทับจุดสีเขียว แล้วถือนิ่ง แอพจะถ่ายเอง\n\nไม่ต้องถ่ายพื้นใต้เท้า แอพจะเติมให้</string>
+    <string name="tip4">เล็งวงกลมสีขาวให้ทับจุดสีเขียว แล้วถือนิ่ง แอพจะถ่ายเอง
+
+ตอนถ่ายพื้น แค่ก้มกล้องลง ถือไว้ที่อกเหมือนเดิม ไม่ต้องยื่นแขน</string>
 
     <string name="back">ย้อนกลับ</string>
     <string name="next">ถัดไป</string>
@@ -21,7 +23,7 @@
     <string name="hint_roll">ถือโทรศัพท์ให้ตรง ไม่เอียง</string>
     <string name="hint_capturing">กำลังถ่าย ถือนิ่งไว้</string>
     <string name="hint_moved">ขยับระหว่างถ่าย ถ่ายใหม่อีกครั้ง</string>
-    <string name="hint_nadir">ยื่นแขน ให้กล้องอยู่เหนือจุดที่ยืน แล้วเล็งลงพื้น</string>
+    <string name="hint_nadir">ก้มกล้องลงพื้น ถือไว้ที่อกเหมือนเดิม ไม่ต้องยื่นแขน</string>
     <string name="hint_done">ครบทุกจุดแล้ว กำลังต่อภาพ…</string>
     <string name="no_sensor">เครื่องนี้ไม่มี gyroscope ใช้แอพนี้ไม่ได้</string>
     <string name="need_camera">ต้องอนุญาตให้ใช้กล้อง</string>

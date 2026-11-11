@@ -111,6 +111,8 @@ object SphereMath {
         includeNadir: Boolean = true,
         /** Tilt the downward rows this much further down (covers more floor when there's no nadir shot). */
         lowerExtraDeg: Double = 0.0,
+        /** Add a ring of floor shots at this pitch (deg below the horizon), 0 = none. */
+        floorRingDeg: Double = 0.0,
     ): List<Target> {
         val step = vFovDeg * (1 - overlap)
         // Upper edge rows must reach before the zenith shot takes over.
@@ -125,6 +127,7 @@ object SphereMath {
         pitchesUp.forEachIndexed { i, p -> order += (i + 1) to p }
         order += (extraRows + 1) to 90.0
         pitchesUp.forEachIndexed { i, p -> order += (extraRows + 2 + i) to -(p + lowerExtraDeg) }
+        if (floorRingDeg > 0) order += (2 * extraRows + 3) to -floorRingDeg
         if (includeNadir) order += (2 * extraRows + 2) to -90.0
 
         val out = mutableListOf<Target>()

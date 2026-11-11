@@ -141,6 +141,8 @@ class Aligner(
      * fits far better (rms < 60 % of the fixed-FOV fit).
      */
     private val fovMode: FovMode = FovMode.AUTO,
+    /** Fit per-frame mesh warps after the rotations (reduces parallax at the seams). */
+    private val meshWarp: Boolean = true,
 ) {
     enum class FovMode { FIXED, FREE, AUTO }
 
@@ -165,6 +167,10 @@ class Aligner(
         /** rms (deg) of the fixed-FOV and free-FOV fits, NaN if not computed. */
         val rmsFixedDeg: Double = Double.NaN,
         val rmsFreeDeg: Double = Double.NaN,
+        /** Per-frame mesh warps (null = none) and the match error before/after warping (deg). */
+        val warps: List<FloatArray?> = emptyList(),
+        val warpRmsBeforeDeg: Double = Double.NaN,
+        val warpRmsAfterDeg: Double = Double.NaN,
     )
 
     companion object {
@@ -177,6 +183,10 @@ class Aligner(
         private const val GRID_Y = 20
         private const val HUBER = 0.004                  // rad ≈ 0.23°
         private const val PRIOR_W = 4e-4                 // ≈ (0.1° / 5.7°)²
+        private const val WARP_SMOOTH = 1.5
+        private const val WARP_DAMP = 0.1
+        private const val WARP_MAX = 0.08          // normalized units ≈ 2°
+        private const val WARP_MIN_SAMPLES = 6
         private const val SCALE_W_FREE = 4e-4
         private const val SCALE_W_FIXED = 1e6
         private const val DEG = Math.PI / 180
@@ -268,6 +278,7 @@ class Aligner(
         if (abs(sigma) >= 0.15) reasons += "FOV เพี้ยน ×%.2f".format(exp(sigma))
         if (maxDev >= 30 * DEG) reasons += "บางภาพต้องหมุน %.0f°".format(maxDev / DEG)
         val ok = reasons.isEmpty()
+        val wf = if (ok && meshWarp) fitWarps(inl, rot, exp(sigma)) else null
         return Result(
             rotations = if (ok) rot.map { Rot.toFloat(it) } else frames.map { it.r },
             fovScale = if (ok) exp(sigma) else 1.0,
@@ -281,7 +292,116 @@ class Aligner(
             fovEstimated = sol === free,
             rmsFixedDeg = (fixed?.rms ?: Double.NaN) / DEG,
             rmsFreeDeg = (free?.rms ?: Double.NaN) / DEG,
+            warps = wf?.warps ?: emptyList(),
+            warpRmsBeforeDeg = wf?.rmsBefore ?: Double.NaN,
+            warpRmsAfterDeg = wf?.rmsAfter ?: Double.NaN,
         )
+    }
+
+    // ---------------- mesh warp ----------------
+
+    private class WarpFit(val warps: List<FloatArray?>, val rmsBefore: Double, val rmsAfter: Double)
+
+    /**
+     * Parallax can't be removed by rotating whole frames: near objects stay offset. Give each frame
+     * a smooth displacement field D on a WARP_GX × WARP_GY grid (FrameImage.warp).
+     *
+     * For a match a (in i) ↔ b (in j) with final rotations, eⱼ = b − projⱼ(rayᵢ(a)) and
+     * eᵢ = a − projᵢ(rayⱼ(b)) are what is left over. Moving each frame half way —
+     *     Dᵢ(a) ≈ eᵢ/2,   Dⱼ(b) ≈ eⱼ/2
+     * puts both images of the point on the same in-between direction. Each frame's grid is then a
+     * small regularised least-squares fit:
+     *     Σ_samples |bilinear(D)(pos) − target|² + λs Σ_neighbours |D_k − D_l|² + λ0 Σ |D_k|²
+     */
+    private fun fitWarps(inl: List<Match>, rot: Array<DoubleArray>, s: Double): WarpFit {
+        val gx = FrameImage.WARP_GX; val gy = FrameImage.WARP_GY; val nodes = gx * gy
+        val samples = Array(n) { ArrayList<DoubleArray>() } // (x, y, tx, ty)
+        val d = DoubleArray(3); val q = DoubleArray(2)
+        var sumBefore = 0.0; var cnt = 0
+        val errs = ArrayList<DoubleArray>() // per match: i, ax, ay, j, bx, by, ejx, ejy
+        for (m in inl) {
+            ray(rot[m.i], th[m.i] * s, tv[m.i] * s, m.ax, m.ay, d)
+            if (!project(rot[m.j], th[m.j] * s, tv[m.j] * s, d, q)) continue
+            val ejx = m.bx - q[0]; val ejy = m.by - q[1]
+            ray(rot[m.j], th[m.j] * s, tv[m.j] * s, m.bx, m.by, d)
+            if (!project(rot[m.i], th[m.i] * s, tv[m.i] * s, d, q)) continue
+            val eix = m.ax - q[0]; val eiy = m.ay - q[1]
+            if (abs(ejx) > WARP_MAX * 2 || abs(ejy) > WARP_MAX * 2) continue
+            samples[m.i] += doubleArrayOf(m.ax, m.ay, eix / 2, eiy / 2)
+            samples[m.j] += doubleArrayOf(m.bx, m.by, ejx / 2, ejy / 2)
+            val a = angle(ejx, ejy, m.j, s)
+            sumBefore += a * a; cnt++
+            errs += doubleArrayOf(m.i.toDouble(), m.ax, m.ay, m.j.toDouble(), m.bx, m.by, ejx, ejy)
+        }
+        if (cnt == 0) return WarpFit(List(n) { null }, Double.NaN, Double.NaN)
+
+        val warps = Array<FloatArray?>(n) { null }
+        val wts = DoubleArray(4); val idx = IntArray(4)
+        for (f in 0 until n) {
+            val smp = samples[f]
+            if (smp.size < WARP_MIN_SAMPLES) continue
+            val a = DoubleArray(nodes * nodes); val bx = DoubleArray(nodes); val by = DoubleArray(nodes)
+            for (sm in smp) {
+                bilinear(sm[0], sm[1], idx, wts)
+                for (u in 0..3) {
+                    bx[idx[u]] += wts[u] * sm[2]; by[idx[u]] += wts[u] * sm[3]
+                    for (v in 0..3) a[idx[u] * nodes + idx[v]] += wts[u] * wts[v]
+                }
+            }
+            fun link(k: Int, l: Int) {
+                a[k * nodes + k] += WARP_SMOOTH; a[l * nodes + l] += WARP_SMOOTH
+                a[k * nodes + l] -= WARP_SMOOTH; a[l * nodes + k] -= WARP_SMOOTH
+            }
+            for (y in 0 until gy) for (x in 0 until gx) {
+                val k = y * gx + x
+                if (x + 1 < gx) link(k, k + 1)
+                if (y + 1 < gy) link(k, k + gx)
+                a[k * nodes + k] += WARP_DAMP
+            }
+            val sx = solve(a, bx, nodes) ?: continue
+            val sy = solve(a, by, nodes) ?: continue
+            warps[f] = FloatArray(nodes * 2) { i ->
+                val v = if (i % 2 == 0) sx[i / 2] else sy[i / 2]
+                v.coerceIn(-WARP_MAX, WARP_MAX).toFloat()
+            }
+        }
+
+        // Error after: eⱼ − Dⱼ(b) + Dᵢ(a)  (frames share the camera, so normalized units are comparable)
+        val tmp = DoubleArray(2)
+        var sumAfter = 0.0
+        for (e in errs) {
+            val i = e[0].toInt(); val j = e[3].toInt()
+            var rx = e[6]; var ry = e[7]
+            warpAt(warps[j], e[4], e[5], tmp); rx -= tmp[0]; ry -= tmp[1]
+            warpAt(warps[i], e[1], e[2], tmp); rx += tmp[0]; ry += tmp[1]
+            val ang = angle(rx, ry, j, s)
+            sumAfter += ang * ang
+        }
+        return WarpFit(warps.toList(), sqrt(sumBefore / cnt) / DEG, sqrt(sumAfter / cnt) / DEG)
+    }
+
+    /** Normalized-coordinate offset in frame f → approximate angle (rad). */
+    private fun angle(x: Double, y: Double, f: Int, s: Double): Double {
+        val ax = x * th[f] * s; val ay = y * tv[f] * s
+        return sqrt(ax * ax + ay * ay)
+    }
+
+    private fun bilinear(nx: Double, ny: Double, idx: IntArray, w: DoubleArray) {
+        val gx = FrameImage.WARP_GX; val gy = FrameImage.WARP_GY
+        val fxg = ((nx + 1) / 2 * (gx - 1)).coerceIn(0.0, gx - 1.0)
+        val fyg = ((ny + 1) / 2 * (gy - 1)).coerceIn(0.0, gy - 1.0)
+        val x0 = min(fxg.toInt(), gx - 2); val y0 = min(fyg.toInt(), gy - 2)
+        val fx = fxg - x0; val fy = fyg - y0
+        idx[0] = y0 * gx + x0; idx[1] = idx[0] + 1; idx[2] = idx[0] + gx; idx[3] = idx[2] + 1
+        w[0] = (1 - fx) * (1 - fy); w[1] = fx * (1 - fy); w[2] = (1 - fx) * fy; w[3] = fx * fy
+    }
+
+    private fun warpAt(w: FloatArray?, nx: Double, ny: Double, out: DoubleArray) {
+        if (w == null) { out[0] = 0.0; out[1] = 0.0; return }
+        val idx = IntArray(4); val wt = DoubleArray(4)
+        bilinear(nx, ny, idx, wt)
+        out[0] = 0.0; out[1] = 0.0
+        for (u in 0..3) { out[0] += wt[u] * w[idx[u] * 2]; out[1] += wt[u] * w[idx[u] * 2 + 1] }
     }
 
     private fun unchanged(matches: Int) =

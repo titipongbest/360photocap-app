@@ -20,12 +20,42 @@ class FrameImage(
     val r: FloatArray,      // device → world, row-major
     val tanH: Double,       // tan(hFOV/2) of this image
     val tanV: Double,       // tan(vFOV/2)
+    /**
+     * Optional mesh warp (see Aligner.fitWarps): displacements on a WARP_GX × WARP_GY grid over the
+     * frame, in normalized image coords, interleaved (dx, dy). The point the rotation model puts at
+     * (nx, ny) is actually found in the image at (nx, ny) + D(nx, ny).
+     */
+    val warp: FloatArray? = null,
 ) {
     internal val fwdX = -r[2].toDouble()
     internal val fwdY = -r[5].toDouble()
     internal val fwdZ = -r[8].toDouble()
+    /** Horizontal length of the viewing direction (≈ 0 for a straight-down/up shot). */
+    internal val fwdH = sqrt(fwdX * fwdX + fwdY * fwdY)
     /** cos of the half-diagonal FOV: directions farther than this from the axis can't be inside. */
     internal val cosCull = cos(atan(sqrt(tanH * tanH + tanV * tanV)))
+
+    /** Bilinear mesh-warp displacement at (nx, ny) → out[0], out[1] (zero without a warp). */
+    fun warpAt(nx: Double, ny: Double, out: DoubleArray) {
+        val w = warp
+        if (w == null) { out[0] = 0.0; out[1] = 0.0; return }
+        val gx = ((nx + 1) / 2 * (WARP_GX - 1)).coerceIn(0.0, WARP_GX - 1.0)
+        val gy = ((ny + 1) / 2 * (WARP_GY - 1)).coerceIn(0.0, WARP_GY - 1.0)
+        val x0 = min(gx.toInt(), WARP_GX - 2); val y0 = min(gy.toInt(), WARP_GY - 2)
+        val fx = gx - x0; val fy = gy - y0
+        val i00 = (y0 * WARP_GX + x0) * 2; val i10 = i00 + 2
+        val i01 = i00 + WARP_GX * 2; val i11 = i01 + 2
+        for (c in 0..1) {
+            val top = w[i00 + c] + (w[i10 + c] - w[i00 + c]) * fx
+            val bot = w[i01 + c] + (w[i11 + c] - w[i01 + c]) * fx
+            out[c] = top + (bot - top) * fy
+        }
+    }
+
+    companion object {
+        const val WARP_GX = 6
+        const val WARP_GY = 8
+    }
 }
 
 /**
@@ -81,6 +111,7 @@ class StitchCore(private val frames: List<FrameImage>, private val yaw0: Double)
     private var lw = 0
     private var lh = 0
     private var labels: IntArray? = null
+    private val warpScratch = ThreadLocal.withInitial { DoubleArray(2) }
 
     /** Use multi-band blending after [prepare] (false = sharp seams, for comparison). */
     var multiBand = true
@@ -110,8 +141,16 @@ class StitchCore(private val frames: List<FrameImage>, private val yaw0: Double)
             val pz = r[2] * dx + r[5] * dy + r[8] * dz
             val depth = -pz
             if (depth <= 1e-6) continue
-            val nx = px / depth / f.tanH
-            val ny = py / depth / f.tanV
+            // Looking down past the nadir a frame sees the photographer's own legs: only use the
+            // floor on the side the camera faces; frames facing the other way fill the rest.
+            if (dz < -0.85 && f.fwdH > 0.2 && dx * f.fwdX + dy * f.fwdY < 0) continue
+            var nx = px / depth / f.tanH
+            var ny = py / depth / f.tanV
+            if (f.warp != null) {
+                val ws = warpScratch.get()!!
+                f.warpAt(nx, ny, ws)
+                nx += ws[0]; ny += ws[1]
+            }
             if (nx <= -1 || nx >= 1 || ny <= -1 || ny >= 1) continue
             if (cnt < MAX_CAND) {
                 cf[cnt] = i

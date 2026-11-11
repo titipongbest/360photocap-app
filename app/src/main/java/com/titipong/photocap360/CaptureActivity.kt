@@ -58,6 +58,8 @@ class CaptureActivity : ComponentActivity() {
         const val OVERLAP = 0.35
         /** No nadir shot: tilt the bottom row further down so less floor has to be filled in. */
         const val LOWER_EXTRA_DEG = 6.0
+        /** Ring of floor shots so the floor is real photo except a small patch under the feet. */
+        const val FLOOR_RING_DEG = 72.0
     }
 
     private lateinit var preview: PreviewView
@@ -271,7 +273,7 @@ class CaptureActivity : ComponentActivity() {
         val dir = File(filesDir, "sessions/${System.currentTimeMillis()}").apply { mkdirs() }
         session = CaptureSession(dir, tanLong, tanShort, yaw0)
         targets = SphereMath.buildTargets(
-            SphereMath.fovDeg(tanH), SphereMath.fovDeg(tanV), OVERLAP, includeNadir = false, lowerExtraDeg = LOWER_EXTRA_DEG,
+            SphereMath.fovDeg(tanH), SphereMath.fovDeg(tanV), OVERLAP, includeNadir = false, lowerExtraDeg = LOWER_EXTRA_DEG, floorRingDeg = FLOOR_RING_DEG,
         )
         session!!.targetCount = targets.size
         targetDirs = targets.map { SphereMath.dirFromYawPitch(yaw0 + it.yaw, it.pitch) }
@@ -306,7 +308,7 @@ class CaptureActivity : ComponentActivity() {
             when {
                 !aimed -> {
                     holdTarget = -1; overlay.holdProgress = 0f
-                    setHint(if (overlay.next >= 0 && abs(targets[overlay.next].pitch) > 80 * DEG && targets[overlay.next].pitch < 0)
+                    setHint(if (overlay.next >= 0 && targets[overlay.next].pitch < -65 * DEG)
                         R.string.hint_nadir else R.string.hint_aim)
                 }
                 !rollOk -> { holdTarget = -1; overlay.holdProgress = 0f; setHint(R.string.hint_roll) }
