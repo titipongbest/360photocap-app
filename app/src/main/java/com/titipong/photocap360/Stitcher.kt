@@ -114,8 +114,11 @@ object Stitcher {
         } else diag.append("\nค่าแสง EXIF: ไม่มีข้อมูล")
         times += "โหลด ${lap()}"
 
+        // Manual edits (from the editor) take precedence over automatic alignment.
+        val manual = EditState.load(File(session.dir, EditState.MANUAL))
+
         // Refine gyro rotations + FOV from image content so overlaps line up.
-        val align = try {
+        val align = if (manual != null) null else try {
             Aligner(images).run { p -> onProgress(0.15f + 0.35f * p) }
         } catch (e: Throwable) {
             Log.e("Stitch", "alignment failed, using gyro only", e); null
@@ -139,12 +142,34 @@ object Stitcher {
             if (align.perFrame.isNotEmpty() && weak.isNotEmpty()) {
                 diag.append("\n  ภาพที่จับคู่ได้น้อย (<8 จุด): ${weak.size} ภาพ (เป้า #${weak.take(8).joinToString(", #")})")
             }
-        } else diag.append("\nจัดภาพ: ผิดพลาด → ใช้ gyroscope อย่างเดียว")
+        } else if (manual == null) diag.append("\nจัดภาพ: ผิดพลาด → ใช้ gyroscope อย่างเดียว")
         times += "จัดภาพ ${lap()}"
-        val frames = if (align != null && align.applied) images.mapIndexed { k, f ->
-            FrameImage(f.pixels, f.width, f.height, align.rotations[k], f.tanH * align.fovScale, f.tanV * align.fovScale,
-                warp = align.warps.getOrNull(k))
-        } else images
+        val frames = when {
+            manual != null -> {
+                diag.append("\nแก้ไขแมนนวล: เลื่อน ${manual.moved.size} ภาพ · ระบาย ${manual.strokes.size} เส้น (ข้ามการจัดภาพอัตโนมัติ)")
+                images.mapIndexed { k, f ->
+                    val name = used[k].file.name
+                    FrameImage(f.pixels, f.width, f.height, manual.rot[name] ?: f.r,
+                        f.tanH * manual.fovScale, f.tanV * manual.fovScale,
+                        warp = if (name in manual.moved) null else manual.warp[name])
+                }
+            }
+            align != null && align.applied -> images.mapIndexed { k, f ->
+                FrameImage(f.pixels, f.width, f.height, align.rotations[k], f.tanH * align.fovScale, f.tanV * align.fovScale,
+                    warp = align.warps.getOrNull(k))
+            }
+            else -> images
+        }
+        // Remember the automatic result so the editor starts from it.
+        if (manual == null) try {
+            EditState(fovScale = if (align?.applied == true) align.fovScale else 1.0).apply {
+                for ((k, f) in frames.withIndex()) {
+                    val name = used[k].file.name
+                    rot[name] = f.r
+                    f.warp?.let { warp[name] = it }
+                }
+            }.save(File(session.dir, EditState.AUTO))
+        } catch (e: Exception) { Log.w("Stitch", "save align.json", e) }
 
         // Output width = horizon pixel density × 360°, capped by memory and a sane maximum.
         val ref = frames.first()
@@ -157,6 +182,12 @@ object Stitcher {
 
         val out = IntArray(outW * outH)
         val core = StitchCore(frames, session.yaw0)
+        if (manual != null) {
+            val index = used.withIndex().associate { it.value.file.name to it.index }
+            core.paint = manual.strokes.mapNotNull { st ->
+                index[st.frame]?.let { StitchCore.Paint(it, st.radius, st.pts.toDoubleArray()) }
+            }
+        }
         onProgress(0.5f)
         try {
             core.prepare(outW, outH)
@@ -203,7 +234,7 @@ object Stitcher {
         Result(bmp, outW, outH, report)
     }
 
-    private fun loadFrame(f: Frame, longEdge: Int, tanLong: Double, tanShort: Double): FrameImage {
+    fun loadFrame(f: Frame, longEdge: Int, tanLong: Double, tanShort: Double): FrameImage {
         val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
         BitmapFactory.decodeFile(f.file.absolutePath, bounds)
         var sample = 1

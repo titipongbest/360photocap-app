@@ -100,6 +100,15 @@ class StitchCore(private val frames: List<FrameImage>, private val yaw0: Double)
     /** Number of alpha-expansion sweeps over all frames. */
     var sweeps = 3
 
+    /**
+     * A painted brush stroke from the manual editor: inside it, the seam finder must use [frame].
+     * [lonLat] holds world (yaw, pitch) pairs in radians (yaw as SphereMath.yawOf), [radius] in radians.
+     */
+    class Paint(val frame: Int, val radius: Double, val lonLat: DoubleArray)
+
+    /** Manual overrides for [prepare] (empty = fully automatic seams). */
+    var paint: List<Paint> = emptyList()
+
     class SeamStats(val seamEnergyBefore: Double, val seamEnergyAfter: Double, val passes: Int)
 
     var seamStats: SeamStats? = null
@@ -220,7 +229,7 @@ class StitchCore(private val frames: List<FrameImage>, private val yaw0: Double)
                 clamp255((col and 0xFF) * g[2])
         }
 
-        val field = SeamField(lw, lh, k, cF, cM, cC, cN, dataWeight)
+        val field = SeamField(lw, lh, k, cF, cM, cC, cN, dataWeight, buildForced(cF, cN, k))
         val before = field.seamEnergy()
         val passes = field.optimize(sweeps)
         seamStats = SeamStats(before, field.seamEnergy(), passes)
@@ -242,6 +251,40 @@ class StitchCore(private val frames: List<FrameImage>, private val yaw0: Double)
             }
             slotAgree = agree
         }
+    }
+
+    /** Grid of frames forced by [paint] (−1 = free). Later strokes win. Only where that frame is a candidate. */
+    private fun buildForced(cF: IntArray, cN: ByteArray, k: Int): IntArray? {
+        if (paint.isEmpty()) return null
+        val forced = IntArray(lw * lh) { -1 }
+        for (st in paint) {
+            val cr = cos(st.radius)
+            var i = 0
+            while (i + 1 < st.lonLat.size) {
+                val lon = st.lonLat[i]; val lat = st.lonLat[i + 1]; i += 2
+                val cx = cos(lat) * sin(lon); val cy = cos(lat) * cos(lon); val cz = sin(lat)
+                val y0 = ((PI / 2 - (lat + st.radius)) / PI * lh - 0.5).toInt().coerceIn(0, lh - 1)
+                val y1 = ((PI / 2 - (lat - st.radius)) / PI * lh + 0.5).toInt().coerceIn(0, lh - 1)
+                for (y in y0..y1) {
+                    val la = PI / 2 - (y + 0.5) / lh * PI
+                    val cl = cos(la); val sl = sin(la)
+                    val half = if (cl < 1e-3) PI else min(PI, st.radius / cl * 1.2)
+                    val xs = if (half >= PI) 0 until lw else {
+                        val xc = ((lon - yaw0 + PI) / (2 * PI) * lw - 0.5)
+                        ((xc - half / (2 * PI) * lw).toInt() - 1)..((xc + half / (2 * PI) * lw).toInt() + 1)
+                    }
+                    for (xr in xs) {
+                        val x = ((xr % lw) + lw) % lw
+                        val gl = (x + 0.5) / lw * 2 * PI - PI + yaw0
+                        val dot = cl * sin(gl) * cx + cl * cos(gl) * cy + sl * cz
+                        if (dot < cr) continue
+                        val p = y * lw + x
+                        for (c in 0 until cN[p].toInt()) if (cF[p * k + c] == st.frame) { forced[p] = st.frame; break }
+                    }
+                }
+            }
+        }
+        return forced
     }
 
     private fun clamp255(v: Double) = (v + 0.5).toInt().coerceIn(0, 255)
@@ -613,9 +656,16 @@ class StitchCore(private val frames: List<FrameImage>, private val yaw0: Double)
         val lw: Int, val lh: Int, val k: Int,
         val cF: IntArray, val cM: FloatArray, val cC: IntArray, val cN: ByteArray,
         val dataW: Double,
+        val forced: IntArray? = null,
     ) {
         val total = lw * lh
-        val lab = IntArray(total) { p -> if (cN[p] > 0) cF[p * k] else -1 }
+        val lab = IntArray(total) { p ->
+            when {
+                forced != null && forced[p] >= 0 -> forced[p]
+                cN[p] > 0 -> cF[p * k]
+                else -> -1
+            }
+        }
 
         private fun colourAt(p: Int, f: Int): Int {
             val base = p * k
@@ -630,6 +680,7 @@ class StitchCore(private val frames: List<FrameImage>, private val yaw0: Double)
         }
 
         private fun data(p: Int, f: Int): Double {
+            if (forced != null && forced[p] >= 0 && forced[p] != f) return FORCED_COST
             val m = marginAt(p, f)
             val short = max(0.0, EDGE - m)
             return dataW * (cM[p * k] - m) + EDGE_WEIGHT * short * short / EDGE
@@ -871,6 +922,8 @@ class StitchCore(private val frames: List<FrameImage>, private val yaw0: Double)
         private const val AGREE_OK = 14f
         private const val AGREE_RANGE = 22f
         private const val NO_OVERLAP_COST = 120.0
+        /** Data cost of not using the painted frame (large but finite so the max-flow stays well-scaled). */
+        private const val FORCED_COST = 5000.0
 
         /**
          * Fills the uncovered caps at the zenith/nadir (e.g. the floor under the photographer) with a

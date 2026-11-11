@@ -37,6 +37,11 @@
             android:screenOrientation="portrait" />
 
         <activity
+            android:name=".EditorActivity"
+            android:exported="false"
+            android:screenOrientation="portrait" />
+
+        <activity
             android:name=".ViewerActivity"
             android:exported="false"
             android:screenOrientation="portrait" />

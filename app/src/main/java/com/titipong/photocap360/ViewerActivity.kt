@@ -146,8 +146,8 @@ class ViewerActivity : ComponentActivity() {
         val buttons = ArrayList<Button>()
         buttons += button(R.string.info) { panel.visibility = if (panel.visibility == View.VISIBLE) View.GONE else View.VISIBLE }
         val d = dir
-        if (d != null && PanoStore.frames(d) > 0) buttons += button(R.string.restitch) {
-            startActivity(Intent(this, StitchActivity::class.java).putExtra(StitchActivity.EXTRA_DIR, d.absolutePath))
+        if (d != null && PanoStore.frames(d) > 0) buttons += button(R.string.edit) {
+            startActivity(Intent(this, EditorActivity::class.java).putExtra(StitchActivity.EXTRA_DIR, d.absolutePath))
             finish()
         }
         buttons += button(R.string.delete) { confirmDelete() }
