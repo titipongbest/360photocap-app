@@ -133,12 +133,17 @@ class Aligner(
     private val frames: List<FrameImage>,
     private val baseLongEdge: Int = 640,
     /**
-     * Also estimate a common FOV scale. Off by default: with the phone held in front of the body,
-     * parallax makes near objects shift more than the rotation and the solver "explains" that by
-     * shrinking the FOV (≈ offset/distance, e.g. 0.2 m / 3 m ≈ 7 %). The Camera2 FOV is more reliable.
+     * Whether to also estimate a common FOV scale.
+     * With the phone held in front of the body, parallax makes near objects shift more than the
+     * rotation and a free solver "explains" that by shrinking the FOV (≈ offset/distance, e.g.
+     * 0.2 m / 3 m ≈ 7 %), which wastes coverage. A genuinely wrong Camera2 FOV, on the other hand,
+     * leaves a large error everywhere. AUTO solves both ways and uses the free FOV only when it
+     * fits far better (rms < 60 % of the fixed-FOV fit).
      */
-    private val estimateFov: Boolean = false,
+    private val fovMode: FovMode = FovMode.AUTO,
 ) {
+    enum class FovMode { FIXED, FREE, AUTO }
+
 
     class Match(val i: Int, val ax: Double, val ay: Double, val j: Int, val bx: Double, val by: Double)
 
@@ -155,6 +160,11 @@ class Aligner(
         val reason: String = "",
         /** Largest correction applied to any frame relative to the gyroscope (deg). */
         val maxDevDeg: Double = 0.0,
+        /** True if the FOV was re-estimated (AUTO picked the free fit). */
+        val fovEstimated: Boolean = false,
+        /** rms (deg) of the fixed-FOV and free-FOV fits, NaN if not computed. */
+        val rmsFixedDeg: Double = Double.NaN,
+        val rmsFreeDeg: Double = Double.NaN,
     )
 
     companion object {
@@ -173,7 +183,7 @@ class Aligner(
     }
 
     private val n = frames.size
-    private val scaleW = if (estimateFov) SCALE_W_FREE else SCALE_W_FIXED
+    private var scaleW = SCALE_W_FIXED
     private val rot0 = Array(n) { Rot.ofFloat(frames[it].r) }
     private val th = DoubleArray(n) { frames[it].tanH }
     private val tv = DoubleArray(n) { frames[it].tanV }
@@ -224,17 +234,31 @@ class Aligner(
         val all = found.toList()
         if (all.size < 3 * n) return unchanged(all.size)
 
-        // ---- bundle adjustment, outlier removal, again
-        val rot = Array(n) { rot0[it].copyOf() }
-        var sigma = bundleAdjust(all, rot, 0.0, 20)
-        val res = DoubleArray(all.size) { residual(all[it], rot, sigma) }
-        val med = res.sorted()[res.size / 2]
-        val thr = max(0.01, 4 * med)
-        val inl = all.filterIndexed { k, _ -> res[k] < thr }
-        sigma = bundleAdjust(inl, rot, sigma, 20)
+        // ---- bundle adjustment, outlier removal, again (fixed and/or free FOV)
+        class Sol(val rot: Array<DoubleArray>, val sigma: Double, val inl: List<Match>, val rms: Double)
+        fun solve(w: Double): Sol {
+            scaleW = w
+            val rot = Array(n) { rot0[it].copyOf() }
+            var sigma = bundleAdjust(all, rot, 0.0, 20)
+            val res = DoubleArray(all.size) { residual(all[it], rot, sigma) }
+            val med = res.sorted()[res.size / 2]
+            val thr = max(0.01, 4 * med)
+            val inl = all.filterIndexed { k, _ -> res[k] < thr }
+            sigma = bundleAdjust(inl, rot, sigma, 20)
+            val rms = sqrt(inl.sumOf { val e = residual(it, rot, sigma); e * e } / max(1, inl.size))
+            return Sol(rot, sigma, inl, rms)
+        }
+        val fixed = if (fovMode != FovMode.FREE) solve(SCALE_W_FIXED) else null
+        val free = if (fovMode != FovMode.FIXED) solve(SCALE_W_FREE) else null
+        val sol = when {
+            fixed == null -> free!!
+            free == null -> fixed
+            free.rms < 0.6 * fixed.rms -> free
+            else -> fixed
+        }
+        val rot = sol.rot; val sigma = sol.sigma; val inl = sol.inl; val rms = sol.rms
         progress(1f)
 
-        val rms = sqrt(inl.sumOf { val e = residual(it, rot, sigma); e * e } / max(1, inl.size))
         val maxDev = (0 until n).maxOf { Rot.angle(Rot.mul(rot[it], Rot.t(rot0[it]))) }
         // Gyro yaw drifts over a full turn, so large corrections are legitimate as long as the images
         // agree (low rms). Only reject when the solution itself looks unreliable.
@@ -254,6 +278,9 @@ class Aligner(
             perFrame = IntArray(n).also { c -> for (m in inl) { c[m.i]++; c[m.j]++ } },
             reason = reasons.joinToString(", "),
             maxDevDeg = maxDev / DEG,
+            fovEstimated = sol === free,
+            rmsFixedDeg = (fixed?.rms ?: Double.NaN) / DEG,
+            rmsFreeDeg = (free?.rms ?: Double.NaN) / DEG,
         )
     }
 

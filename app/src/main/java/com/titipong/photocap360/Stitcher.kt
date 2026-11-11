@@ -125,7 +125,12 @@ object Stitcher {
                 "rms=%.3f° fovScale=%.4f applied=${align.applied}".format(align.rmsDeg, align.fovScale))
             diag.append("\nจัดภาพ: ").append(if (align.applied) "ใช้ ✓" else "ไม่ใช้ (${align.reason}) → ใช้ gyroscope อย่างเดียว")
             diag.append(" · จุดจับคู่ ${align.matches} (ผ่าน ${align.inliers})")
-            if (align.inliers > 0) diag.append(" · rms %.2f° · FOV ×%.3f · แก้ gyro สูงสุด %.1f°".format(align.rmsDeg, align.fovScale, align.maxDevDeg))
+            if (align.inliers > 0) {
+                diag.append(" · rms %.2f° · แก้ gyro สูงสุด %.1f°".format(align.rmsDeg, align.maxDevDeg))
+                diag.append("\n  FOV: ").append(
+                    if (align.fovEstimated) "ปรับ ×%.3f (ค่าจากกล้องคลาด: rms %.2f° → %.2f°)".format(align.fovScale, align.rmsFixedDeg, align.rmsFreeDeg)
+                    else "ใช้ค่าจากกล้อง (ถ้าปรับ rms %.2f° → %.2f° ไม่คุ้ม ส่วนใหญ่เป็น parallax)".format(align.rmsFixedDeg, align.rmsFreeDeg))
+            }
             val weak = align.perFrame.withIndex().filter { it.value < 8 }.map { used[it.index].targetIndex }
             if (align.perFrame.isNotEmpty() && weak.isNotEmpty()) {
                 diag.append("\n  ภาพที่จับคู่ได้น้อย (<8 จุด): ${weak.size} ภาพ (เป้า #${weak.take(8).joinToString(", #")})")

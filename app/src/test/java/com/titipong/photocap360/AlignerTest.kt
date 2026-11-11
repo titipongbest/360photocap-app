@@ -56,7 +56,7 @@ class AlignerTest {
 
     private class Setup(val truth: List<FloatArray>, val frames: List<FrameImage>, val k: Double, val yaw0: Double)
 
-    private fun setup(): Setup {
+    private fun setup(k: Double = 1.03): Setup {
         val hFov = 50.0; val vFov = 65.0
         val th = SphereMath.tanHalf(hFov); val tv = SphereMath.tanHalf(vFov)
         val rnd = Random(7)
@@ -65,7 +65,7 @@ class AlignerTest {
         val truth = SphereMath.buildTargets(hFov, vFov, 0.35).map {
             poses.poseFor(yaw0 + it.yaw, it.pitch, (rnd.nextDouble() - 0.5) * 0.06)
         }
-        val k = 1.03 // the FOV we "believe" is 3 % too wide
+        // k = how much too wide the FOV we "believe" is (1.03 → 3 % off)
         val w = 300; val h = 400
         val frames = truth.map { t ->
             val px = render(t, th, tv, w, h)
@@ -97,7 +97,7 @@ class AlignerTest {
     @Test fun recoversRotationsAndFov() {
         val s = setup()
         val before = maxRelErrDeg(s.truth, s.frames.map { it.r })
-        val res = Aligner(s.frames, estimateFov = true).run()
+        val res = Aligner(s.frames).run()
         val after = maxRelErrDeg(s.truth, res.rotations)
         println("STAT align matches=${res.matches} inliers=${res.inliers} rms=%.4f° scale·k=%.5f relErr before=%.3f° after=%.3f°"
             .format(res.rmsDeg, res.fovScale * s.k, before, after))
@@ -108,7 +108,7 @@ class AlignerTest {
 
     @Test fun alignedStitchHasLessGhosting() {
         val s = setup()
-        val res = Aligner(s.frames, estimateFov = true).run()
+        val res = Aligner(s.frames).run()
         val aligned = s.frames.mapIndexed { i, f ->
             FrameImage(f.pixels, f.width, f.height, res.rotations[i], f.tanH * res.fovScale, f.tanV * res.fovScale)
         }
@@ -139,10 +139,21 @@ class AlignerTest {
         assertTrue("seam error $eAfter vs $eBefore", eAfter < eBefore * 0.4)
     }
 
-    @Test fun fovStaysFixedByDefault() {
-        val s = setup()
+    @Test fun autoKeepsCameraFovWhenItIsRight() {
+        val s = setup(k = 1.0)
         val res = Aligner(s.frames).run()
-        println("STAT fixed-FOV align applied=${res.applied} rms=%.3f° scale=%.5f".format(res.rmsDeg, res.fovScale))
+        println("STAT auto-FOV (FOV correct) estimated=${res.fovEstimated} rms fixed=%.3f° free=%.3f° scale=%.5f"
+            .format(res.rmsFixedDeg, res.rmsFreeDeg, res.fovScale))
+        assertTrue(res.applied)
+        assertTrue("FOV should stay as reported", !res.fovEstimated)
         assertEquals(1.0, res.fovScale, 1e-3)
+    }
+
+    @Test fun autoEstimatesFovWhenCameraIsWrong() {
+        val s = setup(k = 1.03)
+        val res = Aligner(s.frames).run()
+        println("STAT auto-FOV (FOV 3%% off) estimated=${res.fovEstimated} rms fixed=%.3f° free=%.3f°"
+            .format(res.rmsFixedDeg, res.rmsFreeDeg))
+        assertTrue(res.fovEstimated)
     }
 }
