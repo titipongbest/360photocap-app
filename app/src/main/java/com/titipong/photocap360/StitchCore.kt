@@ -1,6 +1,5 @@
 package com.titipong.photocap360
 
-import java.util.concurrent.atomic.AtomicInteger
 import java.util.stream.IntStream
 import kotlin.math.PI
 import kotlin.math.abs
@@ -51,17 +50,19 @@ class FrameImage(
  *         Σ_pixels dataWeight·(bestMargin − margin(owner))
  *       + Σ_neighbour pairs with different owners (a,b)  [ |Iₐ−I_b|(p) + |Iₐ−I_b|(q) ]
  *     i.e. seams prefer places where the two frames agree (flat walls) and avoid places where they
- *     disagree (nearby objects displaced by parallax). Solved by iterated conditional modes on a
- *     reduced-resolution grid; at render time the owner map is bilinearly interpolated, which gives
- *     a short crossfade at the seams.
+ *     disagree (nearby objects displaced by parallax). The data term is almost flat (a seam may sit
+ *     anywhere in an overlap) except within [EDGE] of a frame border. Solved with alpha-expansion
+ *     graph cuts (Boykov-Veksler-Zabih; own Dinic max-flow) on a reduced-resolution grid; at render
+ *     time the owner map is bilinearly interpolated, which gives a short crossfade at the seams.
  */
 class StitchCore(private val frames: List<FrameImage>, private val yaw0: Double) {
 
     /** Width of the crossfade in plain mode, in tan units (0.035 ≈ 2°). */
     var seamBand = 0.035
-    /** Cost of choosing a frame whose margin is smaller than the best one, per tan unit. */
-    var dataWeight = 1200.0
-    var icmPasses = 40
+    /** Weak preference for the frame whose centre is closest (cost per tan unit of margin lost). */
+    var dataWeight = 60.0
+    /** Number of alpha-expansion sweeps over all frames. */
+    var sweeps = 3
 
     class SeamStats(val seamEnergyBefore: Double, val seamEnergyAfter: Double, val passes: Int)
 
@@ -165,7 +166,7 @@ class StitchCore(private val frames: List<FrameImage>, private val yaw0: Double)
 
         val field = SeamField(lw, lh, k, cF, cM, cC, cN, dataWeight)
         val before = field.seamEnergy()
-        val passes = field.icm(icmPasses)
+        val passes = field.optimize(sweeps)
         seamStats = SeamStats(before, field.seamEnergy(), passes)
         labels = field.lab
     }
@@ -211,7 +212,7 @@ class StitchCore(private val frames: List<FrameImage>, private val yaw0: Double)
                 b[i] += nn / sg2; b[j] += nn / sg2
             }
             val g = solveDense(a, b, n)
-            for (i in 0 until n) gains[i][ch] = (g?.get(i) ?: 1.0).coerceIn(0.7, 1.4)
+            for (i in 0 until n) gains[i][ch] = (g?.get(i) ?: 1.0).coerceIn(0.8, 1.25)
         }
     }
 
@@ -354,6 +355,18 @@ class StitchCore(private val frames: List<FrameImage>, private val yaw0: Double)
             return 0 // alpha is always 0xFF for real colours
         }
 
+        private fun marginAt(p: Int, f: Int): Double {
+            val base = p * k
+            for (i in 0 until cN[p].toInt()) if (cF[base + i] == f) return cM[base + i].toDouble()
+            return -1.0
+        }
+
+        private fun data(p: Int, f: Int): Double {
+            val m = marginAt(p, f)
+            val short = max(0.0, EDGE - m)
+            return dataW * (cM[p * k] - m) + EDGE_WEIGHT * short * short / EDGE
+        }
+
         private fun colDiff(a: Int, b: Int): Int =
             (abs(((a shr 16) and 0xFF) - ((b shr 16) and 0xFF)) +
                 abs(((a shr 8) and 0xFF) - ((b shr 8) and 0xFF)) +
@@ -374,6 +387,7 @@ class StitchCore(private val frames: List<FrameImage>, private val yaw0: Double)
             }
         }
 
+        /** d: 0 left, 1 right (both wrap around 360°), 2 up, 3 down; −1 if outside the grid. */
         private fun nbr(p: Int, d: Int): Int {
             val x = p % lw; val y = p / lw
             return when (d) {
@@ -382,19 +396,6 @@ class StitchCore(private val frames: List<FrameImage>, private val yaw0: Double)
                 2 -> if (y > 0) p - lw else -1
                 else -> if (y + 1 < lh) p + lw else -1
             }
-        }
-
-        private fun pixelCost(p: Int, c: Int): Double {
-            val a = cF[p * k + c]
-            var cost = dataW * (cM[p * k] - cM[p * k + c])
-            for (d in 0..3) {
-                val q = nbr(p, d)
-                if (q < 0) continue
-                val lq = lab[q]
-                if (lq < 0) continue
-                cost += pairCost(p, a, q, lq)
-            }
-            return cost
         }
 
         /** Σ edge costs over right/down neighbours (no data term). */
@@ -411,47 +412,185 @@ class StitchCore(private val frames: List<FrameImage>, private val yaw0: Double)
             return e
         }
 
-        /** Iterated conditional modes with red/black updates so rows can run in parallel. */
-        fun icm(maxPasses: Int): Int {
-            var passes = 0
-            for (iter in 0 until maxPasses) {
-                val changed = AtomicInteger()
-                for (parity in 0..1) {
-                    IntStream.range(0, lh).parallel().forEach { y ->
-                        var x = (y + parity) and 1
-                        var local = 0
-                        while (x < lw) {
-                            val p = y * lw + x
-                            val c = cN[p].toInt()
-                            if (c > 1) {
-                                val cur = lab[p]
-                                var bestC = -1; var bestCost = Double.MAX_VALUE; var curCost = Double.MAX_VALUE
-                                for (i in 0 until c) {
-                                    val cost = pixelCost(p, i)
-                                    if (cF[p * k + i] == cur) curCost = cost
-                                    if (cost < bestCost) { bestCost = cost; bestC = i }
-                                }
-                                if (bestC >= 0 && bestCost < curCost - 1e-9) {
-                                    lab[p] = cF[p * k + bestC]; local++
-                                }
-                            }
-                            x += 2
-                        }
-                        if (local > 0) changed.addAndGet(local)
+        // ---- alpha-expansion
+
+        private val framePixels: Array<IntArray> by lazy {
+            val nf = (cF.maxOrNull() ?: -1) + 1
+            val count = IntArray(nf)
+            for (p in 0 until total) for (i in 0 until cN[p].toInt()) count[cF[p * k + i]]++
+            val lists = Array(nf) { IntArray(count[it]) }
+            val fill = IntArray(nf)
+            for (p in 0 until total) for (i in 0 until cN[p].toInt()) {
+                val f = cF[p * k + i]; lists[f][fill[f]++] = p
+            }
+            lists
+        }
+
+        private val nodeOf = IntArray(total) { -1 }
+
+        /** Returns the number of full sweeps run. */
+        fun optimize(maxSweeps: Int): Int {
+            val maxNodes = framePixels.maxOfOrNull { it.size } ?: 0
+            if (maxNodes == 0) return 0
+            val flow = MaxFlow(maxNodes + 2, 4 * maxNodes + 8)
+            var last = seamEnergy()
+            var sweepsDone = 0
+            for (sweep in 0 until maxSweeps) {
+                for (alpha in framePixels.indices) expand(alpha, flow)
+                sweepsDone++
+                val e = seamEnergy()
+                val gain = last - e
+                last = e
+                if (gain < 0.002 * (e + 1)) break
+            }
+            return sweepsDone
+        }
+
+        private fun expand(alpha: Int, g: MaxFlow) {
+            val pix = framePixels[alpha]
+            val m = pix.size
+            if (m == 0) return
+            for (i in 0 until m) nodeOf[pix[i]] = i
+            val u0 = DoubleArray(m); val u1 = DoubleArray(m)
+            val pe = IntArray(2 * m); val pq = IntArray(2 * m); val pc = IntArray(2 * m)
+            var pn = 0
+
+            for (i in 0 until m) {
+                val p = pix[i]
+                val lp = lab[p]
+                u0[i] += data(p, lp)
+                u1[i] += data(p, alpha)
+                for (d in 0..3) {
+                    val q = nbr(p, d)
+                    if (q < 0) continue
+                    val qi = nodeOf[q]
+                    if (qi >= 0) {
+                        if (d == 0 || d == 2) continue // handled from q's side
+                        val lq = lab[q]
+                        val a = pairCost(p, lp, q, lq)
+                        val b = pairCost(p, lp, q, alpha)
+                        val c = pairCost(p, alpha, q, lq)
+                        u1[i] += c - a
+                        u1[qi] += -c
+                        val cap = b + c - a
+                        if (cap > 1e-9) { pe[pn] = i; pq[pn] = qi; pc[pn] = (cap * CAP_SCALE + 0.5).toInt(); pn++ }
+                    } else {
+                        val lq = lab[q]
+                        if (lq < 0) continue
+                        u0[i] += pairCost(p, lp, q, lq)
+                        u1[i] += pairCost(p, alpha, q, lq)
                     }
                 }
-                passes++
-                if (changed.get() <= total / 50000) break
             }
-            return passes
+
+            g.reset(m + 2)
+            val s = m; val t = m + 1
+            for (i in 0 until m) {
+                val base = min(u0[i], u1[i])
+                val c0 = ((u0[i] - base) * CAP_SCALE + 0.5).toInt()   // paid when the node keeps its label
+                val c1 = ((u1[i] - base) * CAP_SCALE + 0.5).toInt()   // paid when it switches to alpha
+                if (c1 > 0) g.addEdge(s, i, c1, 0)
+                if (c0 > 0) g.addEdge(i, t, c0, 0)
+            }
+            for (e in 0 until pn) g.addEdge(pe[e], pq[e], pc[e], 0)
+
+            g.maxFlow(s, t)
+            for (i in 0 until m) if (!g.onSourceSide(i)) lab[pix[i]] = alpha
+            for (i in 0 until m) nodeOf[pix[i]] = -1
         }
+    }
+
+    /** Dinic max-flow with an iterative DFS (no recursion → no stack overflow on long paths). */
+    private class MaxFlow(maxNodes: Int, maxEdges: Int) {
+        private val head = IntArray(maxNodes)
+        private val to = IntArray(2 * maxEdges)
+        private val cap = IntArray(2 * maxEdges)
+        private val nxt = IntArray(2 * maxEdges)
+        private val level = IntArray(maxNodes)
+        private val cur = IntArray(maxNodes)
+        private val queue = IntArray(maxNodes)
+        private val path = IntArray(maxNodes)
+        private var n = 0
+        private var ec = 0
+
+        fun reset(nodes: Int) { n = nodes; ec = 0; java.util.Arrays.fill(head, 0, nodes, -1) }
+
+        fun addEdge(u: Int, v: Int, c: Int, rc: Int) {
+            to[ec] = v; cap[ec] = c; nxt[ec] = head[u]; head[u] = ec++
+            to[ec] = u; cap[ec] = rc; nxt[ec] = head[v]; head[v] = ec++
+        }
+
+        private fun bfs(s: Int, t: Int): Boolean {
+            java.util.Arrays.fill(level, 0, n, -1)
+            var qh = 0; var qt = 0
+            queue[qt++] = s; level[s] = 0
+            while (qh < qt) {
+                val u = queue[qh++]
+                var e = head[u]
+                while (e != -1) {
+                    val v = to[e]
+                    if (cap[e] > 0 && level[v] < 0) { level[v] = level[u] + 1; queue[qt++] = v }
+                    e = nxt[e]
+                }
+            }
+            return level[t] >= 0
+        }
+
+        fun maxFlow(s: Int, t: Int): Long {
+            var total = 0L
+            while (bfs(s, t)) {
+                System.arraycopy(head, 0, cur, 0, n)
+                var depth = 0
+                var u = s
+                while (true) {
+                    if (u == t) {
+                        var f = Int.MAX_VALUE
+                        for (i in 0 until depth) f = min(f, cap[path[i]])
+                        var firstSat = -1
+                        for (i in 0 until depth) {
+                            val e = path[i]
+                            cap[e] -= f; cap[e xor 1] += f
+                            if (firstSat < 0 && cap[e] == 0) firstSat = i
+                        }
+                        total += f
+                        u = to[path[firstSat] xor 1]
+                        depth = firstSat
+                        continue
+                    }
+                    var advanced = false
+                    while (cur[u] != -1) {
+                        val e = cur[u]
+                        if (cap[e] > 0 && level[to[e]] == level[u] + 1) {
+                            path[depth++] = e; u = to[e]; advanced = true; break
+                        }
+                        cur[u] = nxt[e]
+                    }
+                    if (!advanced) {
+                        if (u == s) break
+                        level[u] = -1
+                        depth--
+                        val e = path[depth]
+                        u = to[e xor 1]
+                        cur[u] = nxt[cur[u]]
+                    }
+                }
+            }
+            bfs(s, t) // leaves level[] = reachability from the source in the residual graph
+            return total
+        }
+
+        fun onSourceSide(v: Int) = level[v] >= 0
     }
 
     companion object {
         private const val MAX_CAND = 16
         private const val KEEP = 6
-        private const val SIGMA_N = 10.0
-        private const val SIGMA_G = 0.1
+        private const val SIGMA_N = 4.0
+        private const val SIGMA_G = 0.2
+        /** Seams may not come closer than this (tan units ≈ 3.5°) to a frame edge. */
+        private const val EDGE = 0.06
+        private const val EDGE_WEIGHT = 2000.0
+        private const val CAP_SCALE = 8.0
         private const val NO_OVERLAP_COST = 120.0
 
         /**
