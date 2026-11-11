@@ -31,4 +31,14 @@
     <string name="share">แชร์</string>
     <string name="new_capture">ถ่ายใหม่</string>
     <string name="viewer_hint">ลากเพื่อหมุนดู · ถ่างนิ้วเพื่อซูม</string>
+
+    <string name="home_empty">ยังไม่มีภาพ 360°\nกดปุ่มกล้องด้านล่างเพื่อเริ่มถ่าย</string>
+    <string name="camera_desc">ถ่ายภาพ 360°</string>
+    <string name="not_stitched">ยังไม่ได้ต่อภาพ · แตะเพื่อต่อ</string>
+    <string name="info">ข้อมูล</string>
+    <string name="restitch">ต่อภาพใหม่</string>
+    <string name="delete">ลบ</string>
+    <string name="delete_confirm">ลบภาพ 360° นี้และภาพถ่ายต้นฉบับทั้งหมด?</string>
+    <string name="cancel">ยกเลิก</string>
+    <string name="no_info">ไม่มีข้อมูลวินิจฉัย (ต่อภาพด้วยเวอร์ชันเก่า) กด "ต่อภาพใหม่" เพื่อสร้าง</string>
 </resources>

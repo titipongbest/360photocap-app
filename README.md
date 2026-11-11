@@ -156,7 +156,10 @@ d   = (cos lat · sin(lon+θ₀), cos lat · cos(lon+θ₀), sin lat)
 
 ```
 app/src/main/java/com/titipong/photocap360/
-  MainActivity.kt        หน้าแนะนำวิธีถ่าย
+  MainActivity.kt        หน้าหลัก: รายการภาพ 360° ในเครื่อง + ปุ่มกล้องตรงกลาง
+  IntroActivity.kt       หน้าแนะนำวิธีถ่าย (ก่อนเข้าโหมดถ่าย)
+  ViewerActivity.kt      ดูภาพ 360° + ข้อมูลวินิจฉัย, ต่อภาพใหม่, ลบ, แชร์
+  PanoStore.kt           จัดการโฟลเดอร์ sessions/ (ภาพ, thumbnail, ลบ)
   CaptureActivity.kt     กล้อง + state machine ถ่ายอัตโนมัติ
   OrientationTracker.kt  gyroscope → R
   TargetOverlayView.kt   วาดเป้า, กรอบภาพที่ถ่ายแล้ว, ลูกศร, แผนที่จุด
@@ -167,5 +170,5 @@ app/src/main/java/com/titipong/photocap360/
   Stitcher.kt            โหลดภาพ, แบ่งงานหลายเธรด
   PanoSaver.kt           JPEG + XMP GPano, บันทึกแกลเลอรี
   PanoViewerView.kt      ตัวดูภาพ 360 (OpenGL ES 2)
-  StitchActivity.kt      หน้าต่อภาพ + ดูผล + แชร์
+  StitchActivity.kt      หน้าต่อภาพ (แสดงความคืบหน้า)
 ```

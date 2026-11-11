@@ -38,10 +38,6 @@ class StitchActivity : ComponentActivity() {
     private lateinit var bar: ProgressBar
     private var galleryUri: Uri? = null
     private var started = false
-    private var viewer: PanoViewerView? = null
-
-    override fun onPause() { super.onPause(); viewer?.onPause() }
-    override fun onResume() { super.onResume(); viewer?.onResume() }
 
     private val requestWrite = registerForActivityResult(ActivityResultContracts.RequestPermission()) { run() }
 
@@ -79,67 +75,24 @@ class StitchActivity : ComponentActivity() {
                 }
                 Log.i("Stitch", "${result.width}x${result.height} in ${System.currentTimeMillis() - t0} ms")
                 val bytes = withContext(Dispatchers.Default) { PanoSaver.encode(result.bitmap) }
+                result.bitmap.recycle()
                 withContext(Dispatchers.IO) {
-                    File(dir, "pano.jpg").writeBytes(bytes)
+                    File(dir, PanoStore.PANO).writeBytes(bytes)
+                    File(dir, PanoStore.THUMB).delete()
+                    PanoStore.deleteGalleryCopy(this@StitchActivity, dir) // re-stitch replaces the old copy
                     val name = "PANO360_" + SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date()) + ".jpg"
                     galleryUri = try { PanoSaver.saveToGallery(this@StitchActivity, bytes, name) } catch (e: Exception) {
                         Log.e("Stitch", "gallery save failed", e); null
                     }
+                    galleryUri?.let { File(dir, PanoStore.GALLERY_URI).writeText(it.toString()) }
                 }
                 if (galleryUri != null) Toast.makeText(this@StitchActivity, R.string.saved, Toast.LENGTH_LONG).show()
-                showViewer(result)
+                startActivity(Intent(this@StitchActivity, ViewerActivity::class.java).putExtra(EXTRA_DIR, dir.absolutePath))
+                finish()
             } catch (e: Throwable) {
                 Log.e("Stitch", "failed", e)
                 status.text = "ต่อภาพไม่สำเร็จ: ${e.message}"
             }
         }
-    }
-
-    private fun showViewer(result: Stitcher.Result) {
-        root.removeAllViews()
-        val v = PanoViewerView(this, result.bitmap).also { viewer = it }
-        root.addView(v, FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT))
-
-        val hint = TextView(this).apply {
-            setText(R.string.viewer_hint); setTextColor(Color.WHITE); textSize = 14f
-            setShadowLayer(6f, 0f, 0f, Color.BLACK)
-        }
-        root.addView(hint, FrameLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT, Gravity.TOP or Gravity.CENTER_HORIZONTAL).apply { topMargin = 48 })
-
-        val info = TextView(this).apply {
-            text = result.diag; setTextColor(Color.WHITE); textSize = 12f
-            setBackgroundColor(0xCC000000.toInt()); setPadding(32, 24, 32, 24)
-            setLineSpacing(4f, 1f)
-            visibility = android.view.View.GONE
-            setOnClickListener { visibility = android.view.View.GONE }
-        }
-        root.addView(info, FrameLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT, Gravity.TOP).apply { topMargin = 120 })
-
-        val bar = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER; setPadding(32, 32, 32, 48) }
-        val infoBtn = Button(this).apply {
-            text = "ข้อมูล"; setTextColor(Color.WHITE); setBackgroundResource(R.drawable.btn_outline)
-            setOnClickListener {
-                info.visibility = if (info.visibility == android.view.View.VISIBLE) android.view.View.GONE else android.view.View.VISIBLE
-            }
-        }
-        val again = Button(this).apply {
-            setText(R.string.new_capture); setTextColor(Color.WHITE); setBackgroundResource(R.drawable.btn_outline)
-            setOnClickListener { startActivity(Intent(this@StitchActivity, CaptureActivity::class.java)); finish() }
-        }
-        val share = Button(this).apply {
-            setText(R.string.share); setTextColor(Color.BLACK); setBackgroundResource(R.drawable.btn_primary)
-            isEnabled = galleryUri != null
-            setOnClickListener {
-                val uri = galleryUri ?: return@setOnClickListener
-                startActivity(Intent.createChooser(Intent(Intent.ACTION_SEND).apply {
-                    type = "image/jpeg"; putExtra(Intent.EXTRA_STREAM, uri)
-                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                }, null))
-            }
-        }
-        bar.addView(infoBtn, LinearLayout.LayoutParams(0, 140, 0.8f).apply { marginEnd = 24 })
-        bar.addView(again, LinearLayout.LayoutParams(0, 140, 1f).apply { marginEnd = 24 })
-        bar.addView(share, LinearLayout.LayoutParams(0, 140, 1f))
-        root.addView(bar, FrameLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT, Gravity.BOTTOM))
     }
 }
