@@ -189,6 +189,12 @@ class Aligner(
         private const val WARP_MIN_SAMPLES = 6
         private const val SCALE_W_FREE = 4e-4
         private const val SCALE_W_FIXED = 1e6
+        /**
+         * Hard bound on the FOV scale (log): ±10 %. With ray-difference residuals a shrinking FOV
+         * shrinks every residual too, so an unbounded solver can collapse to a tiny FOV with frames
+         * rotated onto each other (seen on a real capture: ×0.11, frames turned 150°).
+         */
+        private const val SIGMA_MAX = 0.1
         private const val DEG = Math.PI / 180
     }
 
@@ -245,7 +251,7 @@ class Aligner(
         if (all.size < 3 * n) return unchanged(all.size)
 
         // ---- bundle adjustment, outlier removal, again (fixed and/or free FOV)
-        class Sol(val rot: Array<DoubleArray>, val sigma: Double, val inl: List<Match>, val rms: Double)
+        class Sol(val rot: Array<DoubleArray>, val sigma: Double, val inl: List<Match>, val rms: Double, val maxDev: Double)
         fun solve(w: Double): Sol {
             scaleW = w
             val rot = Array(n) { rot0[it].copyOf() }
@@ -256,14 +262,17 @@ class Aligner(
             val inl = all.filterIndexed { k, _ -> res[k] < thr }
             sigma = bundleAdjust(inl, rot, sigma, 20)
             val rms = sqrt(inl.sumOf { val e = residual(it, rot, sigma); e * e } / max(1, inl.size))
-            return Sol(rot, sigma, inl, rms)
+            val dev = (0 until n).maxOf { Rot.angle(Rot.mul(rot[it], Rot.t(rot0[it]))) }
+            return Sol(rot, sigma, inl, rms, dev)
         }
         val fixed = if (fovMode != FovMode.FREE) solve(SCALE_W_FIXED) else null
         val free = if (fovMode != FovMode.FIXED) solve(SCALE_W_FREE) else null
         val sol = when {
             fixed == null -> free!!
             free == null -> fixed
-            free.rms < 0.6 * fixed.rms -> free
+            // Only trust a free FOV that fits far better, isn't pinned at the bound, and didn't need
+            // to spin frames around (signs of the degenerate collapse).
+            free.rms < 0.6 * fixed.rms && abs(free.sigma) < 0.95 * SIGMA_MAX && free.maxDev < 30 * DEG -> free
             else -> fixed
         }
         val rot = sol.rot; val sigma = sol.sigma; val inl = sol.inl; val rms = sol.rms
@@ -633,7 +642,7 @@ class Aligner(
                 val cand = Array(n) { k ->
                     Rot.mul(Rot.exp(-delta[3 * k], -delta[3 * k + 1], -delta[3 * k + 2]), rot[k])
                 }
-                val candSigma = sigma - delta[cs]
+                val candSigma = (sigma - delta[cs]).coerceIn(-SIGMA_MAX, SIGMA_MAX)
                 val c = cost(ms, cand, candSigma)
                 if (c < cur) {
                     val gain = cur - c

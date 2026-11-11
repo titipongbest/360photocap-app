@@ -286,4 +286,14 @@ class SeamTest {
         assertTrue(res.applied)
         assertTrue("warp should reduce the error", res.warpRmsAfterDeg < res.warpRmsBeforeDeg * 0.7)
     }
+
+    /** A free FOV must stay within ±10 % even when parallax pulls it (no collapse). */
+    @Test fun freeFovIsBounded() {
+        val frames = poses().map { r ->
+            FrameImage(TestScene.renderRoom(r, th, tv, 200, 267, camOffset = 0.35), 200, 267, r, th, tv)
+        }
+        val res = Aligner(frames, fovMode = Aligner.FovMode.FREE).run()
+        println("STAT free FOV in room: scale=%.4f applied=${res.applied} maxDev=%.2f°".format(res.fovScale, res.maxDevDeg))
+        assertTrue("scale ${res.fovScale}", res.fovScale in 0.9..1.11)
+    }
 }
