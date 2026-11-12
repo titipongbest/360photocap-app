@@ -191,7 +191,7 @@ class ViewerActivity : ComponentActivity() {
         // "AI" (below the 360° button): stitch again using AI depth, or open the AI result.
         if (!showAi && d != null && PanoStore.frames(d) > 0 && !File(d, EditState.MANUAL).exists()) {
             val aiBtn = Button(this).apply {
-                text = "AI"; textSize = 14f; isAllCaps = false
+                this.text = "AI"; textSize = 14f; isAllCaps = false
                 setTextColor(Color.WHITE); setBackgroundResource(R.drawable.btn_outline_round)
                 compactButton()
                 contentDescription = getString(R.string.ai_desc)
