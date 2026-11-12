@@ -86,7 +86,8 @@ class StitchActivity : ComponentActivity() {
                     }
                     galleryUri?.let { File(dir, PanoStore.GALLERY_URI).writeText(it.toString()) }
                 }
-                if (galleryUri != null) Toast.makeText(this@StitchActivity, R.string.saved, Toast.LENGTH_LONG).show()
+                if (galleryUri != null) Toast.makeText(this@StitchActivity,
+                    getString(R.string.saved_to, PhotoFolder.displayName(this@StitchActivity)), Toast.LENGTH_LONG).show()
                 startActivity(Intent(this@StitchActivity, ViewerActivity::class.java).putExtra(EXTRA_DIR, dir.absolutePath))
                 finish()
             } catch (e: Throwable) {

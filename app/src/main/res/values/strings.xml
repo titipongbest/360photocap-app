@@ -51,4 +51,12 @@
     <string name="gyro_on">โหมด 360°: ขยับมือถือเพื่อมองรอบๆ</string>
     <string name="gyro_off">โหมดลากนิ้ว</string>
     <string name="credit">By NorthXbar</string>
+    <string name="saved_to">บันทึกแล้ว (%1$s)</string>
+    <string name="folder_desc">เลือกโฟลเดอร์</string>
+    <string name="folder_label">โฟลเดอร์: %1$s</string>
+    <string name="folder_title">โฟลเดอร์ภาพ 360°</string>
+    <string name="folder_current">แสดงและบันทึกภาพที่: %1$s</string>
+    <string name="folder_pick">เลือกโฟลเดอร์อื่น…</string>
+    <string name="folder_default">ใช้ค่าเริ่มต้น (Pictures/360PhotoCap)</string>
+    <string name="folder_failed">ใช้โฟลเดอร์นี้ไม่ได้</string>
 </resources>

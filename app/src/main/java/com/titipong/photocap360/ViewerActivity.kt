@@ -209,7 +209,7 @@ class ViewerActivity : ComponentActivity() {
     /** Images this app didn't create need the user's confirmation (Android 10+). */
     private fun deleteUri(u: Uri) {
         try {
-            contentResolver.delete(u, null, null)
+            PhotoFolder.delete(this, u)
             finish()
         } catch (e: SecurityException) {
             val sender: IntentSender? = when {
@@ -221,6 +221,8 @@ class ViewerActivity : ComponentActivity() {
             }
             if (sender != null) deleteRequest.launch(IntentSenderRequest.Builder(sender).build())
             else Toast.makeText(this, R.string.delete_failed, Toast.LENGTH_LONG).show()
+        } catch (e: Exception) {
+            Toast.makeText(this, R.string.delete_failed, Toast.LENGTH_LONG).show()
         }
     }
 }

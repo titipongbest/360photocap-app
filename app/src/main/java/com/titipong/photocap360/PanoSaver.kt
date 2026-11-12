@@ -52,8 +52,9 @@ object PanoSaver {
         return jpeg.copyOfRange(0, 2) + seg + jpeg.copyOfRange(2, jpeg.size)
     }
 
-    /** Saves into Pictures/360PhotoCap and returns the gallery Uri. */
+    /** Saves into the chosen folder (PhotoFolder) or Pictures/360PhotoCap, and returns the image Uri. */
     fun saveToGallery(ctx: Context, bytes: ByteArray, name: String): Uri? {
+        PhotoFolder.tree(ctx)?.let { return PhotoFolder.save(ctx, it, bytes, name) }
         val resolver = ctx.contentResolver
         return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             val values = ContentValues().apply {

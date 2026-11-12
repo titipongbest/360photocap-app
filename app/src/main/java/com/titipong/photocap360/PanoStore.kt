@@ -50,6 +50,7 @@ object PanoStore {
     /** Images in Pictures/360PhotoCap (all of them with read permission, otherwise this app's own). */
     @Suppress("DEPRECATION")
     private fun queryFolder(ctx: Context): List<FolderImage> {
+        PhotoFolder.tree(ctx)?.let { tree -> return PhotoFolder.list(ctx, tree).map { FolderImage(it.uri, it.name, it.time) } }
         val coll = MediaStore.Images.Media.EXTERNAL_CONTENT_URI
         val proj = arrayOf(
             MediaStore.Images.Media._ID, MediaStore.Images.Media.DISPLAY_NAME,
@@ -82,7 +83,11 @@ object PanoStore {
             val stitched = File(d, PANO).exists()
             if (!stitched && frames(d) == 0) { d.deleteRecursively(); continue }
             val u = galleryUri(d)
-            if (u != null) sessions[u.toString()] = d else loose += d
+            when {
+                u == null -> loose += d
+                PhotoFolder.isCurrent(ctx, u) -> sessions[u.toString()] = d
+                else -> {} // its copy is in another folder: shown when that folder is selected
+            }
         }
         val out = ArrayList<PanoItem>()
         for (img in queryFolder(ctx)) {
@@ -142,7 +147,7 @@ object PanoStore {
     /** Removes the gallery copy (if this app still owns it). */
     fun deleteGalleryCopy(ctx: Context, dir: File) {
         val uri = galleryUri(dir) ?: return
-        try { ctx.contentResolver.delete(uri, null, null) } catch (e: Exception) { Log.w("PanoStore", "gallery delete", e) }
+        try { PhotoFolder.delete(ctx, uri) } catch (e: Exception) { Log.w("PanoStore", "gallery delete", e) }
         File(dir, GALLERY_URI).delete()
     }
 

@@ -1,6 +1,9 @@
 package com.titipong.photocap360
 
 import android.Manifest
+import android.app.AlertDialog
+import android.net.Uri
+import android.widget.Toast
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
@@ -38,6 +41,18 @@ class MainActivity : ComponentActivity() {
         else Manifest.permission.READ_EXTERNAL_STORAGE
     private val requestRead = registerForActivityResult(ActivityResultContracts.RequestPermission()) { reload() }
 
+    /** System folder picker: the chosen folder is where panoramas are listed from and saved to. */
+    private val pickFolder = registerForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri: Uri? ->
+        if (uri == null) return@registerForActivityResult
+        try {
+            PhotoFolder.set(this, uri)
+        } catch (e: Exception) {
+            Toast.makeText(this, R.string.folder_failed, Toast.LENGTH_LONG).show()
+        }
+        reload()
+    }
+    private lateinit var folderName: TextView
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
@@ -48,6 +63,8 @@ class MainActivity : ComponentActivity() {
             layoutManager = LinearLayoutManager(this@MainActivity)
             adapter = this@MainActivity.adapter
         }
+        folderName = findViewById(R.id.folder_name)
+        findViewById<View>(R.id.folder).setOnClickListener { chooseFolder() }
         findViewById<View>(R.id.camera).setOnClickListener {
             startActivity(Intent(this, IntroActivity::class.java))
         }
@@ -61,7 +78,22 @@ class MainActivity : ComponentActivity() {
         reload()
     }
 
+    private fun chooseFolder() {
+        val custom = PhotoFolder.tree(this) != null
+        val items = if (custom) arrayOf(getString(R.string.folder_pick), getString(R.string.folder_default))
+            else arrayOf(getString(R.string.folder_pick))
+        AlertDialog.Builder(this)
+            .setTitle(getString(R.string.folder_current, PhotoFolder.displayName(this)))
+            .setItems(items) { _, which ->
+                if (which == 0) pickFolder.launch(PhotoFolder.tree(this))
+                else { PhotoFolder.set(this, null); reload() }
+            }
+            .setNegativeButton(R.string.cancel, null)
+            .show()
+    }
+
     private fun reload() {
+        folderName.text = getString(R.string.folder_label, PhotoFolder.displayName(this))
         lifecycleScope.launch {
             val items = withContext(Dispatchers.IO) { PanoStore.list(this@MainActivity) }
             // A re-stitched panorama has a new thumbnail: drop cached bitmaps that are gone.
