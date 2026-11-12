@@ -468,15 +468,7 @@ class Aligner(
             warpAt(warps[i], e[1], e[2], tmp, gx, gy); rx += tmp[0]; ry += tmp[1]
             return angle(rx, ry, j, s)
         }
-        // Two passes: the second drops samples the first fit can't explain (mismatches on repetitive
-        // texture would otherwise pull the smooth field around).
-        var use = errs
-        var warps = solveWarps(use, gx, gy, damp, minSamples)
-        val res = DoubleArray(errs.size) { after(errs[it], warps) }
-        val med = res.sorted()[res.size / 2]
-        val thr = max(3 * med, 0.3 * DEG)
-        use = ArrayList(errs.filterIndexed { k, _ -> res[k] < thr })
-        if (use.size >= minSamples) warps = solveWarps(use, gx, gy, damp, minSamples)
+        val warps = solveWarps(errs, gx, gy, damp, minSamples)
 
         // Error after (all samples, so the number is comparable with "before").
         var sumAfter = 0.0
