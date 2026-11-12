@@ -6,10 +6,18 @@ By NorthXbar
 
 ## ดาวน์โหลด APK
 
-ทุกครั้งที่ push เข้า `main` GitHub Actions จะ build APK ให้
-แท็บ **Actions** → run ล่าสุด → **Artifacts** → `360PhotoCap-apk`
+ทุกครั้งที่ push เข้า `main` GitHub Actions จะรัน unit test, build และออก release `v0.2.<เลข run>` ให้
+- ตัวล่าสุดเสมอ: https://github.com/titipongbest/360photocap-app/releases/latest/download/360PhotoCap.apk
+- ทุกเวอร์ชัน: แท็บ **Releases** (ไฟล์ `360PhotoCap-v0.2.x.apk`)
 
-Build เอง: `./gradlew assembleRelease` (ต้องมี JDK 17 + Android SDK)
+เลขเวอร์ชันและ commit แสดงที่หน้าแรกของแอพ และบรรทัดแรกของข้อมูลวินิจฉัย
+
+**การ sign** ตั้งแต่ v0.2.49 APK ทุกตัว sign ด้วย release key (alias `photocap360`)
+CI อ่าน keystore จาก repository secrets `KEYSTORE_BASE64` (ไฟล์ .jks เป็น base64) และ `KEYSTORE_PASSWORD`
+แล้วตรวจลายนิ้วมือผู้ sign (SHA-256 `62:47:77:13:…:B3:88`) ถ้าไม่ตรง build จะล้มและไม่ออก release
+เครื่องที่ติดตั้งเวอร์ชันก่อน v0.2.49 (debug key) ต้องลบแอพก่อนติดตั้งครั้งแรก ไฟล์ keystore ไม่อยู่ใน repo
+
+Build เอง: `./gradlew assembleRelease` (JDK 17 + Android SDK) ถ้าไม่มี `KEYSTORE_FILE` / `KEYSTORE_PASSWORD` ใน environment จะ sign ด้วย debug key
 
 ## การทำงาน
 
@@ -27,7 +35,12 @@ Build เอง: `./gradlew assembleRelease` (ต้องมี JDK 17 + Androi
 6. **จัดภาพให้ตรงกัน** (`Aligner.kt`) หาจุดที่ตรงกันระหว่างภาพที่ซ้อนกัน แล้วปรับทิศของแต่ละภาพและค่า FOV ให้รอยต่อสนิท (รายละเอียดด้านล่าง)
 7. **ปรับความสว่าง + หารอยต่อ + ผสมหลายความถี่** (`StitchCore.prepare`) ทำให้ทุกภาพสว่างเท่ากัน แล้ววางรอยต่อให้เลี่ยงวัตถุใกล้ที่เหลื่อมกัน
 8. **ต่อภาพ** (`StitchCore.kt`) แบบ inverse mapping ใช้ทุก core ของ CPU
-9. **บันทึก** (`PanoSaver.kt`) ลง `Pictures/360PhotoCap` พร้อม XMP GPano และเปิดดูในแอพด้วย OpenGL (`PanoViewerView.kt`)
+9. **บันทึก** (`PanoSaver.kt`) พร้อม XMP GPano ลงโฟลเดอร์ที่เลือก (ค่าเริ่มต้น `Pictures/360PhotoCap`)
+   และเปิดดูในแอพด้วย OpenGL (`PanoViewerView.kt`) ลากนิ้วหรือกดปุ่ม 360° เพื่อขยับมือถือมองรอบๆ (gyroscope)
+10. **หน้าแรก** (`MainActivity.kt`) แสดงภาพทุกภาพในโฟลเดอร์ (รวมภาพที่ไม่ได้ถ่ายด้วยแอพ) + ปุ่มกล้องตรงกลาง
+   ปุ่มโฟลเดอร์มุมขวาบน (`PhotoFolder.kt`) เลือกโฟลเดอร์ที่จะแสดงและบันทึกด้วยตัวเลือกโฟลเดอร์ของระบบ
+   (Storage Access Framework, เก็บสิทธิ์อ่าน/เขียนถาวร) หรือกลับไปใช้ค่าเริ่มต้นผ่าน MediaStore
+   แสดงเฉพาะไฟล์ jpg/png/webp ชั้นแรกของโฟลเดอร์ ภาพที่บันทึกไว้ในโฟลเดอร์อื่นจะซ่อนจนกว่าจะเลือกโฟลเดอร์นั้น
 
 ## การคำนวณ
 
@@ -137,7 +150,8 @@ E = Σ_พิกเซล  60·(margin ดีสุด − margin ของภ�
 
 **บิดภาพเฉพาะจุด (mesh warp)** แก้ parallax ที่การหมุนทั้งภาพแก้ไม่ได้
 
-แต่ละภาพมีตารางเลื่อน D ขนาด 6×8 จุด (`FrameImage.warp`) ภาพถูกอ่านที่ (nx, ny) + D(nx, ny)
+แต่ละภาพมีตารางเลื่อน D (`FrameImage.warp`: 6×8 จากจุดมุมอย่างเดียว หรือ 12×16 เมื่อรวมจุดหนาแน่นด้านล่าง)
+ภาพถูกอ่านที่ (nx, ny) + D(nx, ny)
 สำหรับจุดคู่ a (ภาพ i) ↔ b (ภาพ j) หลังจัดการหมุนแล้ว ยังเหลือ
 ```
 eⱼ = b − projⱼ(rayᵢ(a))        eᵢ = a − projᵢ(rayⱼ(b))
@@ -218,28 +232,36 @@ d   = (cos lat · sin(lon+θ₀), cos lat · cos(lon+θ₀), sin lat)
 
 ## ข้อจำกัดของเวอร์ชันนี้
 
-- รอยต่อหลบวัตถุได้เฉพาะเมื่อมีทางอ้อมในโซนซ้อน วัตถุใหญ่ที่ใกล้มาก (< 1 ม.) และขวางทั้งโซนยังเห็นรอยเหลื่อม
-  วิธีถ่าย: ให้มือถืออยู่จุดเดิมในอากาศแล้วเดินวนรอบมัน และยืนห่างโต๊ะ/ผนัง
+- โมเดลห้องคิดว่าทุกอย่างอยู่บนผนัง/พื้น/เพดานแบบกล่อง ของที่อยู่ใกล้กล้องมาก (< 1 ม. เช่นเก้าอี้ โต๊ะ) หรือยื่นจากผนัง (เสา วงกบ)
+  ยังเห็นรอยเหลื่อมได้ รอยต่อหลบได้เฉพาะเมื่อมีทางอ้อมในโซนซ้อน
+  วิธีถ่าย: ถือมือถือชิดอก ยืนกับที่แล้วหมุนตัว และย้ายของที่อยู่ใกล้ตัวไม่ถึง 1 ม. ออกก่อน
 - ห้องผนังเรียบมีจุดให้จับคู่น้อย การจัดภาพอาจไม่สำเร็จ (ดูผลวินิจฉัย)
 - รองรับมือถือที่แนวปกติเป็นแนวตั้ง (ไม่ใช่แท็บเล็ต)
+- ใช้โฟลเดอร์หลักของ Download หรือรากของที่เก็บข้อมูลไม่ได้ (ข้อจำกัดของ Android) ต้องเลือกโฟลเดอร์ย่อย
 
 ## โครงสร้างไฟล์
 
 ```
 app/src/main/java/com/titipong/photocap360/
-  MainActivity.kt        หน้าหลัก: ทุกภาพในโฟลเดอร์ Pictures/360PhotoCap + ปุ่มกล้องตรงกลาง
-  IntroActivity.kt       หน้าแนะนำวิธีถ่าย (ก่อนเข้าโหมดถ่าย)
-  ViewerActivity.kt      ดูภาพ 360° + ข้อมูลวินิจฉัย, ต่อภาพใหม่, ลบ, แชร์
-  PanoStore.kt           จัดการโฟลเดอร์ sessions/ (ภาพ, thumbnail, ลบ)
+  MainActivity.kt        หน้าหลัก: ภาพในโฟลเดอร์ที่เลือก + ปุ่มกล้องตรงกลาง + ปุ่มเลือกโฟลเดอร์
+  IntroActivity.kt       หน้าแนะนำวิธีถ่ายพร้อมภาพประกอบ (ก่อนเข้าโหมดถ่าย)
+  ViewerActivity.kt      ดูภาพ 360° (ลาก / gyroscope) + ข้อมูลวินิจฉัย (คัดลอกได้), แก้ไข, ลบ, แชร์
+  EditorActivity.kt      แก้การต่อภาพแมนนวล (เลื่อนภาพ, ระบายเลือกภาพ) + EditorView.kt
+  EditState.kt           align.json / manual.json (การหมุน, FOV, warp, ตำแหน่งกล้อง, เส้นระบาย)
+  PanoStore.kt           จัดการโฟลเดอร์ sessions/ (ภาพ, thumbnail, ลบ) และรายการหน้าแรก
+  PhotoFolder.kt         โฟลเดอร์ที่แสดง/บันทึก: ค่าเริ่มต้น (MediaStore) หรือโฟลเดอร์ที่เลือก (SAF)
   CaptureActivity.kt     กล้อง + state machine ถ่ายอัตโนมัติ
   OrientationTracker.kt  gyroscope → R
   TargetOverlayView.kt   วาดเป้า, กรอบภาพที่ถ่ายแล้ว, ลูกศร, แผนที่จุด
   SphereMath.kt          คณิตศาสตร์ทรงกลม + วางเป้า
   CaptureSession.kt      เก็บภาพ + R เป็น session.json
   Aligner.kt             จับคู่จุด + bundle adjustment ปรับทิศและ FOV (pure Kotlin, มี unit test)
-  StitchCore.kt          ต่อภาพ equirectangular + เบลนด์รอยต่อ (pure Kotlin, มี unit test)
+  StitchCore.kt          ต่อภาพ equirectangular + gain + seam (graph cut) + multi-band (pure Kotlin, มี unit test)
+  SeamSelect.kt          เลือกผลจัดภาพจากคุณภาพรอยต่อ (pure Kotlin, มี unit test)
   Stitcher.kt            โหลดภาพ, แบ่งงานหลายเธรด
   PanoSaver.kt           JPEG + XMP GPano, บันทึกแกลเลอรี
   PanoViewerView.kt      ตัวดูภาพ 360 (OpenGL ES 2)
   StitchActivity.kt      หน้าต่อภาพ (แสดงความคืบหน้า)
+  SystemBars.kt          เว้นที่ขอบจอ (edge-to-edge) และขนาดปุ่ม
+  AspectImageView.kt     ภาพประกอบในหน้าแนะนำ
 ```
