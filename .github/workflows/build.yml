@@ -25,8 +25,24 @@ jobs:
         run: |
           set -o pipefail
           ./gradlew --no-daemon testDebugUnitTest 2>&1 | tee build.log
+      - name: Release keystore
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+        run: |
+          if [ -z "$KEYSTORE_BASE64" ]; then echo "::error::KEYSTORE_BASE64 secret is missing"; exit 1; fi
+          echo "$KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/release.jks"
+          echo "KEYSTORE_FILE=$RUNNER_TEMP/release.jks" >> "$GITHUB_ENV"
       - name: Build APK
+        env:
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
         run: ./gradlew --no-daemon assembleRelease
+      - name: Verify signature
+        run: |
+          AS=$(ls -d "$ANDROID_HOME"/build-tools/*/ | sort -V | tail -1)apksigner
+          OUT=$("$AS" verify --print-certs app/build/outputs/apk/release/app-release.apk)
+          FP=$(echo "$OUT" | grep -i "certificate SHA-256 digest" | head -1 | awk '{print $NF}')
+          echo "::notice::APK signer SHA-256 $FP"
+          [ "$FP" = "6247771329cd27742d32910f6e44fba6b6570cf9ff3655e3247ea21b24e8b388" ] || { echo "::error::APK is not signed with the release key"; exit 1; }
       - name: Name APK
         run: |
           mkdir -p dist

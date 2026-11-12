@@ -19,11 +19,24 @@ android {
         buildConfigField("String", "GIT_SHA", "\"$gitSha\"")
     }
 
+    // Release key: CI writes the keystore from the KEYSTORE_BASE64 secret and passes its path and
+    // password in the environment. Local builds without them fall back to the debug key.
+    val ksFile = System.getenv("KEYSTORE_FILE")?.let { file(it) }?.takeIf { it.exists() }
+    val ksPassword = System.getenv("KEYSTORE_PASSWORD")
+    signingConfigs {
+        if (ksFile != null && !ksPassword.isNullOrEmpty()) create("release") {
+            storeFile = ksFile
+            storePassword = ksPassword
+            keyAlias = "photocap360"
+            keyPassword = ksPassword
+            storeType = "JKS"
+        }
+    }
+
     buildTypes {
         release {
             isMinifyEnabled = false
-            // Signed with the debug key so the APK from CI installs directly.
-            signingConfig = signingConfigs.getByName("debug")
+            signingConfig = signingConfigs.findByName("release") ?: signingConfigs.getByName("debug")
         }
     }
 
