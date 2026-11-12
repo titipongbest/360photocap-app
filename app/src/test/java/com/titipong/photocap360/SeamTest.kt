@@ -12,7 +12,7 @@ import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.sqrt
 
-private object TestScene {
+internal object TestScene {
     fun hash(x: Int, y: Int, z: Int): Double {
         var h = x * 374761393 + y * 668265263 + z * 1274126177
         h = (h xor (h ushr 13)) * 1274126177
