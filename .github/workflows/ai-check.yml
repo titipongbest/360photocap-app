@@ -1,0 +1,25 @@
+name: AI model check
+
+on:
+  push:
+    branches: [ 'ai-*' ]
+  workflow_dispatch:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install onnxruntime numpy pillow
+      - name: Download model
+        run: |
+          curl -sSL -o model.onnx https://huggingface.co/onnx-community/depth-anything-v2-small/resolve/main/onnx/model_quantized.onnx
+          curl -sSL -o pre.json https://huggingface.co/onnx-community/depth-anything-v2-small/resolve/main/preprocessor_config.json
+          ls -l model.onnx; sha256sum model.onnx
+          echo "::notice::sha256 $(sha256sum model.onnx | cut -d' ' -f1) size $(stat -c %s model.onnx)"
+          echo "::notice::pre $(tr -d '\n ' < pre.json)"
+      - name: Run
+        run: python tools/ai_check.py model.onnx
