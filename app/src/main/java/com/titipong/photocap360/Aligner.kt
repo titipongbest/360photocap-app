@@ -181,7 +181,27 @@ class Aligner(
         val warps: List<FloatArray?> = emptyList(),
         val warpRmsBeforeDeg: Double = Double.NaN,
         val warpRmsAfterDeg: Double = Double.NaN,
+        /** Dense seam matches (regular grid in the overlaps, after the rotations are known). */
+        val denseMatches: Int = 0,
+        /**
+         * Alternatives for [SeamSelect] to choose from by seam quality; the first is this result
+         * itself. Empty when the alignment wasn't applied.
+         */
+        val candidates: List<Candidate> = emptyList(),
     )
+
+    /** One complete alignment hypothesis (what the stitcher needs to render it). */
+    class Candidate(
+        val name: String,
+        val rotations: List<FloatArray>,
+        val fovScale: Double,
+        val rhoWall: Double,
+        val kappa: Double,
+        val warps: List<FloatArray?>,
+    )
+
+    /** Geometry used to predict where a point of frame i lands in frame j. */
+    private class Geo(val rot: Array<DoubleArray>, val s: Double, val rw: Double, val kp: Double)
 
     companion object {
         private const val LEVELS = 3
@@ -209,6 +229,12 @@ class Aligner(
         private const val WARP_DAMP = 0.1
         private const val WARP_MAX = 0.12          // normalized units ≈ 3°
         private const val WARP_MIN_SAMPLES = 6
+        /** Dense seam matching: grid step (px at the base level), texture threshold, NCC search. */
+        private const val DENSE_STEP = 16
+        private const val DENSE_MIN_STD = 0.02
+        private val DENSE_SEARCH = intArrayOf(2, 2, 4)
+        private val DENSE_NCC = doubleArrayOf(0.85, 0.75, 0.65)
+        private const val DENSE_AMBIG = 0.05
         private const val SCALE_W_FREE = 4e-4
         private const val SCALE_W_FIXED = 1e6
         /**
@@ -229,6 +255,7 @@ class Aligner(
     private val th = DoubleArray(n) { frames[it].tanH }
     private val tv = DoubleArray(n) { frames[it].tanV }
     private lateinit var pyr: Array<Array<GrayImage>>
+    private val gyroGeo = Geo(rot0, 1.0, rw0, kp0)
 
     fun run(progress: (Float) -> Unit = {}): Result {
         if (n < 2) return unchanged(0)
@@ -304,7 +331,7 @@ class Aligner(
             else -> fixed
         }
         val rot = sol.rot; val g = sol.g; val sigma = sol.sigma; val inl = sol.inl; val rms = sol.rms
-        progress(1f)
+        progress(0.85f)
 
         val maxDev = (0 until n).maxOf { Rot.angle(Rot.mul(rot[it], Rot.t(rot0[it]))) }
         // Gyro yaw drifts over a full turn, so large corrections are legitimate as long as the images
@@ -317,7 +344,30 @@ class Aligner(
         val ok = reasons.isEmpty()
         // Use every match, not just the rotation inliers: the points on near objects are exactly the
         // ones the rotation-only fit rejects. Gross mismatches are dropped inside fitWarps (|e| > 2·max).
-        val wf = if (ok && meshWarp) fitWarps(all, rot, g) else null
+        //
+        // Dense seam matches (after Google's Street View seam fix): with the rotations known, match a
+        // regular grid of points in every overlap, not only corners. Flat-ish walls and the parallax
+        // around near objects get many more samples, so a finer warp grid can follow them.
+        val dense = if (ok && meshWarp) denseMatches(pairs, Geo(rot, exp(sigma), g[1], g[2])) { p -> progress(0.85f + 0.13f * p) } else emptyList()
+        val fine = if (ok && meshWarp) fitWarps(all + dense, rot, g, FrameImage.WARP_GX, FrameImage.WARP_GY) else null
+        val coarse = if (ok && meshWarp) fitWarps(all, rot, g, FrameImage.SPARSE_GX, FrameImage.SPARSE_GY) else null
+        val wf = fine ?: coarse
+        val candidates = ArrayList<Candidate>()
+        if (ok) {
+            fun cand(name: String, s: Sol, w: WarpFit?) =
+                Candidate(name, s.rot.map { Rot.toFloat(it) }, exp(s.sigma), s.g[1], s.g[2], w?.warps ?: List(n) { null })
+            val fovName = if (sol === free) "FOV ปรับ" else "FOV กล้อง"
+            candidates += cand("$fovName + บิดละเอียด", sol, wf)
+            if (coarse != null && fine != null) candidates += cand("$fovName + บิดหยาบ", sol, coarse)
+            // The other FOV hypothesis, if it is sane (reuse the dense matches: they are image facts).
+            val other = if (sol === free) fixed else free
+            if (other != null && other.rms < 1.0 * DEG && abs(other.sigma) < 0.95 * SIGMA_MAX && other.maxDev < 30 * DEG &&
+                other.inl.size >= max(2 * n, 40)) {
+                val ow = if (meshWarp) fitWarps(all + dense, other.rot, other.g, FrameImage.WARP_GX, FrameImage.WARP_GY) else null
+                candidates += cand(if (other === free) "FOV ปรับ + บิดละเอียด" else "FOV กล้อง + บิดละเอียด", other, ow)
+            }
+            candidates += Candidate("gyroscope อย่างเดียว", frames.map { it.r }, 1.0, 0.0, 0.0, List(n) { null })
+        }
         val maxTilt = (0 until n).maxOf { val p = Rot.log(Rot.mul(rot[it], Rot.t(rot0[it]))); sqrt(p[0] * p[0] + p[1] * p[1]) }
         return Result(
             rotations = if (ok) rot.map { Rot.toFloat(it) } else frames.map { it.r },
@@ -338,7 +388,38 @@ class Aligner(
             warps = wf?.warps ?: emptyList(),
             warpRmsBeforeDeg = wf?.rmsBefore ?: Double.NaN,
             warpRmsAfterDeg = wf?.rmsAfter ?: Double.NaN,
-        )
+            denseMatches = dense.size,
+            candidates = candidates,
+        ).also { progress(1f) }
+    }
+
+    /**
+     * Regular grid of points in frame i (every [DENSE_STEP] px) that the solved geometry puts inside
+     * frame j, each matched by NCC with a small search around the prediction. One direction per pair.
+     */
+    private fun denseMatches(pairs: List<IntArray>, geo: Geo, progress: (Float) -> Unit): List<Match> {
+        val found = ConcurrentLinkedQueue<Match>()
+        val done = AtomicInteger()
+        IntStream.range(0, pairs.size).parallel().forEach { p ->
+            val (i, j) = pairs[p]
+            val g0 = pyr[i][0]
+            val margin = (TPL[LEVELS - 1] + 1) * (1 shl (LEVELS - 1))
+            val d = DoubleArray(3); val q = DoubleArray(2)
+            var y = margin
+            while (y < g0.h - margin) {
+                var x = margin
+                while (x < g0.w - margin) {
+                    ray(geo.rot[i], th[i] * geo.s, tv[i] * geo.s, g0.nxOf(x.toDouble()), g0.nyOf(y.toDouble()), d, geo.rw, geo.kp)
+                    if (project(geo.rot[j], th[j] * geo.s, tv[j] * geo.s, d, q, geo.rw, geo.kp) && abs(q[0]) < 0.9 && abs(q[1]) < 0.9) {
+                        matchFeature(i, j, x.toDouble(), y.toDouble(), geo, DENSE_SEARCH, DENSE_NCC, DENSE_AMBIG, DENSE_MIN_STD)?.let { found += it }
+                    }
+                    x += DENSE_STEP
+                }
+                y += DENSE_STEP
+            }
+            progress(done.incrementAndGet().toFloat() / pairs.size)
+        }
+        return found.toList()
     }
 
     // ---------------- mesh warp ----------------
@@ -356,13 +437,15 @@ class Aligner(
      * small regularised least-squares fit:
      *     Σ_samples |bilinear(D)(pos) − target|² + λs Σ_neighbours |D_k − D_l|² + λ0 Σ |D_k|²
      */
-    private fun fitWarps(inl: List<Match>, rot: Array<DoubleArray>, g: DoubleArray): WarpFit {
+    private fun fitWarps(inl: List<Match>, rot: Array<DoubleArray>, g: DoubleArray, gx: Int, gy: Int): WarpFit {
         val s = exp(g[0]); val rw = g[1]; val kp = g[2]
-        val gx = FrameImage.WARP_GX; val gy = FrameImage.WARP_GY; val nodes = gx * gy
-        val samples = Array(n) { ArrayList<DoubleArray>() } // (x, y, tx, ty)
+        val nodes = gx * gy
+        // Finer grids have more nodes per sample: scale the pull toward zero so the total stays alike.
+        val damp = WARP_DAMP * (FrameImage.SPARSE_GX * FrameImage.SPARSE_GY).toDouble() / nodes
+        val minSamples = WARP_MIN_SAMPLES * max(1, nodes / (FrameImage.SPARSE_GX * FrameImage.SPARSE_GY))
         val d = DoubleArray(3); val q = DoubleArray(2)
         var sumBefore = 0.0; var cnt = 0
-        val errs = ArrayList<DoubleArray>() // per match: i, ax, ay, j, bx, by, ejx, ejy
+        val errs = ArrayList<DoubleArray>() // per match: i, ax, ay, j, bx, by, ejx, ejy, eix, eiy
         for (m in inl) {
             ray(rot[m.i], th[m.i] * s, tv[m.i] * s, m.ax, m.ay, d, rw, kp)
             if (!project(rot[m.j], th[m.j] * s, tv[m.j] * s, d, q, rw, kp)) continue
@@ -371,22 +454,52 @@ class Aligner(
             if (!project(rot[m.i], th[m.i] * s, tv[m.i] * s, d, q, rw, kp)) continue
             val eix = m.ax - q[0]; val eiy = m.ay - q[1]
             if (abs(ejx) > WARP_MAX * 2 || abs(ejy) > WARP_MAX * 2) continue
-            samples[m.i] += doubleArrayOf(m.ax, m.ay, eix / 2, eiy / 2)
-            samples[m.j] += doubleArrayOf(m.bx, m.by, ejx / 2, ejy / 2)
             val a = angle(ejx, ejy, m.j, s)
             sumBefore += a * a; cnt++
-            errs += doubleArrayOf(m.i.toDouble(), m.ax, m.ay, m.j.toDouble(), m.bx, m.by, ejx, ejy)
+            errs += doubleArrayOf(m.i.toDouble(), m.ax, m.ay, m.j.toDouble(), m.bx, m.by, ejx, ejy, eix, eiy)
         }
         if (cnt == 0) return WarpFit(List(n) { null }, Double.NaN, Double.NaN)
 
+        val tmp = DoubleArray(2)
+        fun after(e: DoubleArray, warps: Array<FloatArray?>): Double {
+            val i = e[0].toInt(); val j = e[3].toInt()
+            var rx = e[6]; var ry = e[7]
+            warpAt(warps[j], e[4], e[5], tmp, gx, gy); rx -= tmp[0]; ry -= tmp[1]
+            warpAt(warps[i], e[1], e[2], tmp, gx, gy); rx += tmp[0]; ry += tmp[1]
+            return angle(rx, ry, j, s)
+        }
+        // Two passes: the second drops samples the first fit can't explain (mismatches on repetitive
+        // texture would otherwise pull the smooth field around).
+        var use = errs
+        var warps = solveWarps(use, gx, gy, damp, minSamples)
+        val res = DoubleArray(errs.size) { after(errs[it], warps) }
+        val med = res.sorted()[res.size / 2]
+        val thr = max(3 * med, 0.3 * DEG)
+        use = ArrayList(errs.filterIndexed { k, _ -> res[k] < thr })
+        if (use.size >= minSamples) warps = solveWarps(use, gx, gy, damp, minSamples)
+
+        // Error after (all samples, so the number is comparable with "before").
+        var sumAfter = 0.0
+        for (e in errs) { val a = after(e, warps); sumAfter += a * a }
+        return WarpFit(warps.toList(), sqrt(sumBefore / cnt) / DEG, sqrt(sumAfter / cnt) / DEG)
+    }
+
+    /** Regularised least-squares displacement grid per frame from (i,a,j,b,eⱼ,eᵢ) samples. */
+    private fun solveWarps(errs: List<DoubleArray>, gx: Int, gy: Int, damp: Double, minSamples: Int): Array<FloatArray?> {
+        val nodes = gx * gy
+        val samples = Array(n) { ArrayList<DoubleArray>() } // (x, y, tx, ty)
+        for (e in errs) {
+            samples[e[0].toInt()] += doubleArrayOf(e[1], e[2], e[8] / 2, e[9] / 2)
+            samples[e[3].toInt()] += doubleArrayOf(e[4], e[5], e[6] / 2, e[7] / 2)
+        }
         val warps = Array<FloatArray?>(n) { null }
         val wts = DoubleArray(4); val idx = IntArray(4)
         for (f in 0 until n) {
             val smp = samples[f]
-            if (smp.size < WARP_MIN_SAMPLES) continue
+            if (smp.size < minSamples) continue
             val a = DoubleArray(nodes * nodes); val bx = DoubleArray(nodes); val by = DoubleArray(nodes)
             for (sm in smp) {
-                bilinear(sm[0], sm[1], idx, wts)
+                bilinear(sm[0], sm[1], idx, wts, gx, gy)
                 for (u in 0..3) {
                     bx[idx[u]] += wts[u] * sm[2]; by[idx[u]] += wts[u] * sm[3]
                     for (v in 0..3) a[idx[u] * nodes + idx[v]] += wts[u] * wts[v]
@@ -400,7 +513,7 @@ class Aligner(
                 val k = y * gx + x
                 if (x + 1 < gx) link(k, k + 1)
                 if (y + 1 < gy) link(k, k + gx)
-                a[k * nodes + k] += WARP_DAMP
+                a[k * nodes + k] += damp
             }
             val sx = solve(a, bx, nodes) ?: continue
             val sy = solve(a, by, nodes) ?: continue
@@ -409,19 +522,7 @@ class Aligner(
                 v.coerceIn(-WARP_MAX, WARP_MAX).toFloat()
             }
         }
-
-        // Error after: eⱼ − Dⱼ(b) + Dᵢ(a)  (frames share the camera, so normalized units are comparable)
-        val tmp = DoubleArray(2)
-        var sumAfter = 0.0
-        for (e in errs) {
-            val i = e[0].toInt(); val j = e[3].toInt()
-            var rx = e[6]; var ry = e[7]
-            warpAt(warps[j], e[4], e[5], tmp); rx -= tmp[0]; ry -= tmp[1]
-            warpAt(warps[i], e[1], e[2], tmp); rx += tmp[0]; ry += tmp[1]
-            val ang = angle(rx, ry, j, s)
-            sumAfter += ang * ang
-        }
-        return WarpFit(warps.toList(), sqrt(sumBefore / cnt) / DEG, sqrt(sumAfter / cnt) / DEG)
+        return warps
     }
 
     /** Normalized-coordinate offset in frame f → approximate angle (rad). */
@@ -430,8 +531,7 @@ class Aligner(
         return sqrt(ax * ax + ay * ay)
     }
 
-    private fun bilinear(nx: Double, ny: Double, idx: IntArray, w: DoubleArray) {
-        val gx = FrameImage.WARP_GX; val gy = FrameImage.WARP_GY
+    private fun bilinear(nx: Double, ny: Double, idx: IntArray, w: DoubleArray, gx: Int, gy: Int) {
         val fxg = ((nx + 1) / 2 * (gx - 1)).coerceIn(0.0, gx - 1.0)
         val fyg = ((ny + 1) / 2 * (gy - 1)).coerceIn(0.0, gy - 1.0)
         val x0 = min(fxg.toInt(), gx - 2); val y0 = min(fyg.toInt(), gy - 2)
@@ -440,10 +540,10 @@ class Aligner(
         w[0] = (1 - fx) * (1 - fy); w[1] = fx * (1 - fy); w[2] = (1 - fx) * fy; w[3] = fx * fy
     }
 
-    private fun warpAt(w: FloatArray?, nx: Double, ny: Double, out: DoubleArray) {
+    private fun warpAt(w: FloatArray?, nx: Double, ny: Double, out: DoubleArray, gx: Int, gy: Int) {
         if (w == null) { out[0] = 0.0; out[1] = 0.0; return }
         val idx = IntArray(4); val wt = DoubleArray(4)
-        bilinear(nx, ny, idx, wt)
+        bilinear(nx, ny, idx, wt, gx, gy)
         out[0] = 0.0; out[1] = 0.0
         for (u in 0..3) { out[0] += wt[u] * w[idx[u] * 2]; out[1] += wt[u] * w[idx[u] * 2 + 1] }
     }
@@ -501,9 +601,9 @@ class Aligner(
     }
 
     /** Pixel of j (at gj's level) → pixel of i (at gi's level) using the gyro rotations. */
-    private fun jToI(j: Int, i: Int, gj: GrayImage, gi: GrayImage, x: Double, y: Double, d: DoubleArray, q: DoubleArray): Boolean {
-        ray(rot0[j], th[j], tv[j], gj.nxOf(x), gj.nyOf(y), d, rw0, kp0)
-        if (!project(rot0[i], th[i], tv[i], d, q, rw0, kp0)) return false
+    private fun jToI(j: Int, i: Int, gj: GrayImage, gi: GrayImage, x: Double, y: Double, d: DoubleArray, q: DoubleArray, geo: Geo): Boolean {
+        ray(geo.rot[j], th[j] * geo.s, tv[j] * geo.s, gj.nxOf(x), gj.nyOf(y), d, geo.rw, geo.kp)
+        if (!project(geo.rot[i], th[i] * geo.s, tv[i] * geo.s, d, q, geo.rw, geo.kp)) return false
         q[0] = gi.pxOf(q[0]); q[1] = gi.pyOf(q[1])
         return true
     }
@@ -545,18 +645,21 @@ class Aligner(
 
     // ---------------- matching ----------------
 
-    private fun matchFeature(i: Int, j: Int, fx: Double, fy: Double): Match? {
+    private fun matchFeature(
+        i: Int, j: Int, fx: Double, fy: Double, geo: Geo = gyroGeo,
+        search: IntArray = SEARCH, minNcc: DoubleArray = MIN_NCC, ambig: Double = 0.1, minStd: Double = MIN_STD,
+    ): Match? {
         val g0 = pyr[i][0]
         val anx = g0.nxOf(fx); val any = g0.nyOf(fy)
         val d = DoubleArray(3); val q = DoubleArray(2)
-        ray(rot0[i], th[i], tv[i], anx, any, d, rw0, kp0)
-        if (!project(rot0[j], th[j], tv[j], d, q, rw0, kp0)) return null
+        ray(geo.rot[i], th[i] * geo.s, tv[i] * geo.s, anx, any, d, geo.rw, geo.kp)
+        if (!project(geo.rot[j], th[j] * geo.s, tv[j] * geo.s, d, q, geo.rw, geo.kp)) return null
         if (abs(q[0]) > 0.95 || abs(q[1]) > 0.95) return null
         var cnx = q[0]; var cny = q[1]
 
         for (lvl in LEVELS - 1 downTo 0) {
             val gi = pyr[i][lvl]; val gj = pyr[j][lvl]
-            val s = SEARCH[lvl]; val r = TPL[lvl]
+            val s = search[lvl]; val r = TPL[lvl]
             val cx = gj.pxOf(cnx).roundToInt(); val cy = gj.pyOf(cny).roundToInt()
             val oxMin = max(-s, r - cx); val oxMax = min(s, gj.w - 1 - r - cx)
             val oyMin = max(-s, r - cy); val oyMax = min(s, gj.h - 1 - r - cy)
@@ -564,13 +667,13 @@ class Aligner(
 
             // Template = i's neighbourhood of the feature, warped into j's pixel grid.
             val pix = gi.pxOf(anx); val piy = gi.pyOf(any)
-            if (!jToI(j, i, gj, gi, cx.toDouble(), cy.toDouble(), d, q)) return null
+            if (!jToI(j, i, gj, gi, cx.toDouble(), cy.toDouble(), d, q, geo)) return null
             val hcx = q[0]; val hcy = q[1]
             val side = 2 * r + 1; val nT = side * side
             val tpl = FloatArray(nT)
             var k = 0; var sum = 0.0
             for (dy in -r..r) for (dx in -r..r) {
-                if (!jToI(j, i, gj, gi, (cx + dx).toDouble(), (cy + dy).toDouble(), d, q)) return null
+                if (!jToI(j, i, gj, gi, (cx + dx).toDouble(), (cy + dy).toDouble(), d, q, geo)) return null
                 val v = gi.sample(pix + q[0] - hcx, piy + q[1] - hcy)
                 if (v.isNaN()) return null
                 tpl[k++] = v; sum += v
@@ -578,7 +681,7 @@ class Aligner(
             val mean = (sum / nT).toFloat()
             var ss = 0.0
             for (t in 0 until nT) { tpl[t] -= mean; ss += (tpl[t] * tpl[t]).toDouble() }
-            if (sqrt(ss / nT) < MIN_STD) return null
+            if (sqrt(ss / nT) < minStd) return null
             val inv = (1 / sqrt(ss)).toFloat()
             for (t in 0 until nT) tpl[t] *= inv
 
@@ -600,7 +703,7 @@ class Aligner(
                 score[(oy + s) * sw + (ox + s)] = ncc
                 if (ncc > best) { best = ncc; bx = ox; by = oy }
             }
-            if (best < MIN_NCC[lvl]) return null
+            if (best < minNcc[lvl]) return null
             if (lvl == LEVELS - 1) {
                 // Peak on the edge of the search window → true match is outside. Ambiguous → repetitive texture.
                 if (bx == oxMin || bx == oxMax || by == oyMin || by == oyMax) return null
@@ -608,7 +711,7 @@ class Aligner(
                 for (oy in oyMin..oyMax) for (ox in oxMin..oxMax) {
                     if (max(abs(ox - bx), abs(oy - by)) > 2) second = max(second, score[(oy + s) * sw + (ox + s)])
                 }
-                if (best - second < 0.1) return null
+                if (best - second < ambig) return null
             }
             var sx = 0.0; var sy = 0.0
             if (lvl == 0) {

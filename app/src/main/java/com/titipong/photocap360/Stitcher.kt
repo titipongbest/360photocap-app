@@ -120,7 +120,7 @@ object Stitcher {
 
         // Refine gyro rotations + FOV from image content so overlaps line up.
         val align = if (manual != null) null else try {
-            Aligner(images).run { p -> onProgress(0.15f + 0.35f * p) }
+            Aligner(images).run { p -> onProgress(0.15f + 0.27f * p) }
         } catch (e: Throwable) {
             Log.e("Stitch", "alignment failed, using gyro only", e); null
         }
@@ -142,7 +142,7 @@ object Stitcher {
                     diag.append(" (ถ้ากล้องห่างแกนหมุน 25 ซม.: ผนัง ≈ %.1f ม., พื้น/เพดาน ≈ %.1f ม.)".format(0.25 / align.rhoWall, 0.25 / align.kappa))
             }
             if (!align.warpRmsBeforeDeg.isNaN()) {
-                diag.append("\n  บิดภาพเฉพาะจุด: ความคลาดที่จุดคู่ %.2f° → %.2f° (${align.warps.count { it != null }} ภาพ)"
+                diag.append("\n  บิดภาพเฉพาะจุด: ความคลาดที่จุดคู่ %.2f° → %.2f° (${align.warps.count { it != null }} ภาพ · จุดหนาแน่นแถบรอยต่อ ${align.denseMatches})"
                     .format(align.warpRmsBeforeDeg, align.warpRmsAfterDeg))
             }
             val weak = align.perFrame.withIndex().filter { it.value < 8 }.map { used[it.index].targetIndex }
@@ -151,6 +151,23 @@ object Stitcher {
             }
         } else if (manual == null) diag.append("\nจัดภาพ: ผิดพลาด → ใช้ gyroscope อย่างเดียว")
         times += "จัดภาพ ${lap()}"
+
+        // Several alignment hypotheses → keep the one whose seams come out cleanest.
+        var chosen: Aligner.Candidate? = align?.candidates?.firstOrNull()
+        if (manual == null && align != null && align.applied && align.candidates.size > 1) {
+            try {
+                val pick = SeamSelect.pick(images, align.candidates, session.yaw0) { p -> onProgress(0.42f + 0.08f * p) }
+                chosen = align.candidates[pick.index]
+                diag.append("\nเลือกจากคุณภาพรอยต่อ: ${chosen.name}")
+                diag.append(align.candidates.indices.joinToString(" · ", " (", ")") { k ->
+                    val sc = pick.scores[k]
+                    (if (k == pick.index) "▶" else "") + align.candidates[k].name + " " + (if (sc == Double.MAX_VALUE) "ผิดพลาด" else "%.0f".format(sc))
+                })
+            } catch (e: Throwable) {
+                Log.e("Stitch", "seam selection failed", e)
+            }
+            times += "เลือก ${lap()}"
+        }
         val frames = when {
             manual != null -> {
                 diag.append("\nแก้ไขแมนนวล: เลื่อน ${manual.moved.size} ภาพ · ระบาย ${manual.strokes.size} เส้น (ข้ามการจัดภาพอัตโนมัติ)")
@@ -161,16 +178,14 @@ object Stitcher {
                         warp = if (name in manual.moved) null else manual.warp[name])
                 }
             }
-            align != null && align.applied -> images.mapIndexed { k, f ->
-                FrameImage(f.pixels, f.width, f.height, align.rotations[k], f.tanH * align.fovScale, f.tanV * align.fovScale,
-                    warp = align.warps.getOrNull(k))
-            }
+            align != null && align.applied && chosen != null -> SeamSelect.frames(images, chosen)
             else -> images
         }
         // Remember the automatic result so the editor starts from it.
         if (manual == null) try {
-            EditState(fovScale = if (align?.applied == true) align.fovScale else 1.0).apply {
-                if (align?.applied == true) { rhoWall = align.rhoWall; kappa = align.kappa }
+            val c = chosen.takeIf { align?.applied == true }
+            EditState(fovScale = c?.fovScale ?: 1.0).apply {
+                if (c != null) { rhoWall = c.rhoWall; kappa = c.kappa }
                 for ((k, f) in frames.withIndex()) {
                     val name = used[k].file.name
                     rot[name] = f.r
@@ -192,7 +207,7 @@ object Stitcher {
         val core = StitchCore(frames, session.yaw0)
         when {
             manual != null -> { core.rhoWall = manual.rhoWall; core.kappa = manual.kappa }
-            align != null && align.applied -> { core.rhoWall = align.rhoWall; core.kappa = align.kappa }
+            align != null && align.applied && chosen != null -> { core.rhoWall = chosen.rhoWall; core.kappa = chosen.kappa }
         }
         if (manual != null) {
             val index = used.withIndex().associate { it.value.file.name to it.index }

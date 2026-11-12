@@ -355,4 +355,29 @@ class SeamTest {
         assertTrue("κ ${room.kappa}", room.kappa in 0.08..0.25)
         assertTrue("stays level: $tilt°", tilt < 1.2)
     }
+
+    /**
+     * Drifting gyro in a room: the seam-quality selector must rank the aligned hypothesis above
+     * gyro-only, and the dense seam matches must be found and lower the leftover error.
+     */
+    @Test fun seamSelectPrefersAlignedCandidate() {
+        val rnd = Random(5)
+        var drift = 0.0
+        val frames = poses().map { r ->
+            drift += rnd.nextGaussian() * 0.8 * SphereMath.DEG
+            val pert = Rot.mul(Rot.exp(rnd.nextGaussian() * 0.003, rnd.nextGaussian() * 0.003, drift), Rot.ofFloat(r))
+            FrameImage(TestScene.renderRoom(r, th, tv, 240, 320, camOffset = 0.2), 240, 320, Rot.toFloat(pert), th, tv)
+        }
+        val res = Aligner(frames).run()
+        assertTrue(res.applied)
+        val pick = SeamSelect.pick(frames, res.candidates, yaw0)
+        println("STAT seam select: dense=${res.denseMatches} warp %.3f° → %.3f° · ".format(res.warpRmsBeforeDeg, res.warpRmsAfterDeg) +
+            res.candidates.indices.joinToString(" | ") { (if (it == pick.index) "*" else "") + res.candidates[it].name + " %.0f".format(pick.scores[it]) })
+        assertTrue("candidates ${res.candidates.size}", res.candidates.size >= 3)
+        assertTrue("dense matches ${res.denseMatches}", res.denseMatches > 500)
+        val gyro = res.candidates.lastIndex
+        assertTrue("gyro-only must not win", pick.index != gyro)
+        assertTrue("aligned seams should be cheaper", pick.scores[0] < pick.scores[gyro])
+        assertTrue("warp should reduce the error", res.warpRmsAfterDeg < res.warpRmsBeforeDeg * 0.7)
+    }
 }

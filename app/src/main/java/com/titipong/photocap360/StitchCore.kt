@@ -21,12 +21,17 @@ class FrameImage(
     val tanH: Double,       // tan(hFOV/2) of this image
     val tanV: Double,       // tan(vFOV/2)
     /**
-     * Optional mesh warp (see Aligner.fitWarps): displacements on a WARP_GX × WARP_GY grid over the
-     * frame, in normalized image coords, interleaved (dx, dy). The point the rotation model puts at
-     * (nx, ny) is actually found in the image at (nx, ny) + D(nx, ny).
+     * Optional mesh warp (see Aligner.fitWarps): displacements on a gx × gy grid over the frame
+     * (WARP_GX × WARP_GY, or the older/coarser SPARSE_GX × SPARSE_GY, told apart by the array size),
+     * in normalized image coords, interleaved (dx, dy). The point the rotation model puts at
+     * (nx, ny) is actually found in the image at (nx, ny) + D(nx, ny). Unknown sizes are ignored.
      */
-    val warp: FloatArray? = null,
+    warp: FloatArray? = null,
 ) {
+    val warp: FloatArray? = warp?.takeIf { gridOf(it.size) != null }
+    private val wgx = this.warp?.let { gridOf(it.size)!![0] } ?: 0
+    private val wgy = this.warp?.let { gridOf(it.size)!![1] } ?: 0
+
     internal val fwdX = -r[2].toDouble()
     internal val fwdY = -r[5].toDouble()
     internal val fwdZ = -r[8].toDouble()
@@ -39,12 +44,13 @@ class FrameImage(
     fun warpAt(nx: Double, ny: Double, out: DoubleArray) {
         val w = warp
         if (w == null) { out[0] = 0.0; out[1] = 0.0; return }
-        val gx = ((nx + 1) / 2 * (WARP_GX - 1)).coerceIn(0.0, WARP_GX - 1.0)
-        val gy = ((ny + 1) / 2 * (WARP_GY - 1)).coerceIn(0.0, WARP_GY - 1.0)
-        val x0 = min(gx.toInt(), WARP_GX - 2); val y0 = min(gy.toInt(), WARP_GY - 2)
+        val gw = wgx; val gh = wgy
+        val gx = ((nx + 1) / 2 * (gw - 1)).coerceIn(0.0, gw - 1.0)
+        val gy = ((ny + 1) / 2 * (gh - 1)).coerceIn(0.0, gh - 1.0)
+        val x0 = min(gx.toInt(), gw - 2); val y0 = min(gy.toInt(), gh - 2)
         val fx = gx - x0; val fy = gy - y0
-        val i00 = (y0 * WARP_GX + x0) * 2; val i10 = i00 + 2
-        val i01 = i00 + WARP_GX * 2; val i11 = i01 + 2
+        val i00 = (y0 * gw + x0) * 2; val i10 = i00 + 2
+        val i01 = i00 + gw * 2; val i11 = i01 + 2
         for (c in 0..1) {
             val top = w[i00 + c] + (w[i10 + c] - w[i00 + c]) * fx
             val bot = w[i01 + c] + (w[i11 + c] - w[i01 + c]) * fx
@@ -53,8 +59,18 @@ class FrameImage(
     }
 
     companion object {
-        const val WARP_GX = 6
-        const val WARP_GY = 8
+        /** Fine grid fitted from dense seam matches. */
+        const val WARP_GX = 12
+        const val WARP_GY = 16
+        /** Coarse grid (feature matches only; also what older align.json/manual.json files hold). */
+        const val SPARSE_GX = 6
+        const val SPARSE_GY = 8
+
+        fun gridOf(size: Int): IntArray? = when (size) {
+            2 * WARP_GX * WARP_GY -> intArrayOf(WARP_GX, WARP_GY)
+            2 * SPARSE_GX * SPARSE_GY -> intArrayOf(SPARSE_GX, SPARSE_GY)
+            else -> null
+        }
     }
 }
 
@@ -120,7 +136,11 @@ class StitchCore(private val frames: List<FrameImage>, private val yaw0: Double)
     /** Manual overrides for [prepare] (empty = fully automatic seams). */
     var paint: List<Paint> = emptyList()
 
-    class SeamStats(val seamEnergyBefore: Double, val seamEnergyAfter: Double, val passes: Int)
+    class SeamStats(
+        val seamEnergyBefore: Double, val seamEnergyAfter: Double, val passes: Int,
+        /** Grid cells no frame covers, and the grid size. */
+        val uncovered: Int = 0, val cells: Int = 0,
+    )
 
     var seamStats: SeamStats? = null
         private set
@@ -244,7 +264,9 @@ class StitchCore(private val frames: List<FrameImage>, private val yaw0: Double)
         val field = SeamField(lw, lh, k, cF, cM, cC, cN, dataWeight, buildForced(cF, cN, k))
         val before = field.seamEnergy()
         val passes = field.optimize(sweeps)
-        seamStats = SeamStats(before, field.seamEnergy(), passes)
+        var holes = 0
+        for (p in 0 until total) if (cN[p].toInt() == 0) holes++
+        seamStats = SeamStats(before, field.seamEnergy(), passes, holes, total)
         labels = field.lab
         if (multiBand) {
             buildBands(field, cF, cN)
