@@ -191,7 +191,7 @@ class EditorActivity : ComponentActivity(), EditorView.Listener {
         val f = base[k]; val n = names[k]
         return FrameImage(f.pixels, f.width, f.height, state.rot[n]!!.copyOf(),
             f.tanH * state.fovScale, f.tanV * state.fovScale,
-            warp = if (n in state.moved) null else state.warp[n])
+            warp = if (n in state.moved) null else state.warp[n], offset = state.offset[n])
     }
 
     /** Frames covering direction d, best (most central) first. */

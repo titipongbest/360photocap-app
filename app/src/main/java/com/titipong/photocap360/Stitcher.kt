@@ -141,6 +141,10 @@ object Stitcher {
                 if (align.rhoWall > 0.005 && align.kappa > 0.005)
                     diag.append(" (ถ้ากล้องห่างแกนหมุน 25 ซม.: ผนัง ≈ %.1f ม., พื้น/เพดาน ≈ %.1f ม.)".format(0.25 / align.rhoWall, 0.25 / align.kappa))
             }
+            if (!align.offsetRmsDeg.isNaN()) {
+                diag.append("\n  ตำแหน่งกล้องแยกต่อภาพ: rms %.2f° → %.2f° · ขยับมากสุด %.2f (≈ %.0f ซม. ถ้ากล้องห่างแกนหมุน 25 ซม.)"
+                    .format(align.rmsDeg, align.offsetRmsDeg, align.maxOffset, align.maxOffset * 25))
+            }
             if (!align.warpRmsBeforeDeg.isNaN()) {
                 diag.append("\n  บิดภาพเฉพาะจุด: ความคลาดที่จุดคู่ %.2f° → %.2f° (${align.warps.count { it != null }} ภาพ · จุดหนาแน่นแถบรอยต่อ ${align.denseMatches})"
                     .format(align.warpRmsBeforeDeg, align.warpRmsAfterDeg))
@@ -175,7 +179,7 @@ object Stitcher {
                     val name = used[k].file.name
                     FrameImage(f.pixels, f.width, f.height, manual.rot[name] ?: f.r,
                         f.tanH * manual.fovScale, f.tanV * manual.fovScale,
-                        warp = if (name in manual.moved) null else manual.warp[name])
+                        warp = if (name in manual.moved) null else manual.warp[name], offset = manual.offset[name])
                 }
             }
             align != null && align.applied && chosen != null -> SeamSelect.frames(images, chosen)
@@ -190,6 +194,7 @@ object Stitcher {
                     val name = used[k].file.name
                     rot[name] = f.r
                     f.warp?.let { warp[name] = it }
+                    f.offset?.let { offset[name] = it }
                 }
             }.save(File(session.dir, EditState.AUTO))
         } catch (e: Exception) { Log.w("Stitch", "save align.json", e) }

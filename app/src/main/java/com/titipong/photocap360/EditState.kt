@@ -24,6 +24,8 @@ class EditState(
     /** Room model (see StitchCore.rhoWall / kappa). */
     var rhoWall: Double = 0.0,
     var kappa: Double = 0.0,
+    /** Per-frame camera positions (see FrameImage.offset). */
+    val offset: MutableMap<String, FloatArray> = LinkedHashMap(),
 ) {
     fun copy() = EditState(
         fovScale,
@@ -32,6 +34,7 @@ class EditState(
         strokes.map { it.copy() }.toMutableList(),
         LinkedHashSet(moved),
         rhoWall, kappa,
+        LinkedHashMap(offset.mapValues { it.value.copyOf() }),
     )
 
     fun save(f: File) {
@@ -41,6 +44,7 @@ class EditState(
                 put("r", JSONArray().apply { r.forEach { put(it.toDouble()) } })
                 warp[name]?.let { w -> put("warp", JSONArray().apply { w.forEach { put(it.toDouble()) } }) }
                 if (name in moved) put("moved", true)
+                offset[name]?.let { u -> put("off", JSONArray().apply { u.forEach { put(it.toDouble()) } }) }
             })
         }
         val st = JSONArray()
@@ -70,6 +74,7 @@ class EditState(
                     e.rot[name] = FloatArray(9) { r.getDouble(it).toFloat() }
                     o.optJSONArray("warp")?.let { w -> e.warp[name] = FloatArray(w.length()) { w.getDouble(it).toFloat() } }
                     if (o.optBoolean("moved")) e.moved += name
+                    o.optJSONArray("off")?.takeIf { it.length() == 3 }?.let { u -> e.offset[name] = FloatArray(3) { u.getDouble(it).toFloat() } }
                 }
                 val st = j.optJSONArray("strokes") ?: JSONArray()
                 for (i in 0 until st.length()) {

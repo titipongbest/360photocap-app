@@ -27,6 +27,11 @@ class FrameImage(
      * (nx, ny) is actually found in the image at (nx, ny) + D(nx, ny). Unknown sizes are ignored.
      */
     warp: FloatArray? = null,
+    /**
+     * Optional camera position of this frame (Aligner option ค), in units of the room-model offset:
+     * the camera sits at ρ(d)·(ux, uy, −(1+uz)) in device coords instead of ρ(d)·(0, 0, −1).
+     */
+    val offset: FloatArray? = null,
 ) {
     val warp: FloatArray? = warp?.takeIf { gridOf(it.size) != null }
     private val wgx = this.warp?.let { gridOf(it.size)!![0] } ?: 0
@@ -177,9 +182,10 @@ class StitchCore(private val frames: List<FrameImage>, private val yaw0: Double)
             val f = frames[i]
             if (dx * f.fwdX + dy * f.fwdY + dz * f.fwdZ < f.cosCull) continue
             val r = f.r
-            val px = r[0] * dx + r[3] * dy + r[6] * dz
-            val py = r[1] * dx + r[4] * dy + r[7] * dz
-            val pz = r[2] * dx + r[5] * dy + r[8] * dz + rho
+            val u = f.offset
+            val px = r[0] * dx + r[3] * dy + r[6] * dz - (if (u != null) rho * u[0] else 0.0)
+            val py = r[1] * dx + r[4] * dy + r[7] * dz - (if (u != null) rho * u[1] else 0.0)
+            val pz = r[2] * dx + r[5] * dy + r[8] * dz + rho * (1 + (u?.get(2) ?: 0f))
             val depth = -pz
             if (depth <= 1e-6) continue
             // Looking down past the nadir a frame sees the photographer's own legs: only use the

@@ -46,8 +46,8 @@ private object TestScene {
      * A box room (x ∈ [−2, 2.5] m, y ∈ [−3, 2] m, floor −1.3 m, ceiling +1.4 m) seen from a camera
      * [camOffset] metres in front of the rotation centre: every surface is near, parallax varies smoothly.
      */
-    fun renderRoom(r: FloatArray, th: Double, tv: Double, w: Int, h: Int, camOffset: Double): IntArray {
-        val c = SphereMath.cameraForward(r) * camOffset
+    fun renderRoom(r: FloatArray, th: Double, tv: Double, w: Int, h: Int, camOffset: Double, sway: Vec3? = null): IntArray {
+        val c = SphereMath.cameraForward(r) * camOffset + (sway ?: Vec3(0.0, 0.0, 0.0))
         val lo = doubleArrayOf(-2.0, -3.0, -1.3); val hi = doubleArrayOf(2.5, 2.0, 1.4)
         val px = IntArray(w * h)
         for (y in 0 until h) for (x in 0 until w) {
@@ -379,5 +379,25 @@ class SeamTest {
         assertTrue("gyro-only must not win", pick.index != gyro)
         assertTrue("aligned seams should be cheaper", pick.scores[0] < pick.scores[gyro])
         assertTrue("warp should reduce the error", res.warpRmsAfterDeg < res.warpRmsBeforeDeg * 0.7)
+    }
+
+    /**
+     * Body sway: every shot's camera is moved ~5 cm at random (on top of the 20 cm offset). Per-frame
+     * camera positions (option ค) must fit clearly better than the shared room model alone.
+     */
+    @Test fun perFrameCameraPositionsFitSway() {
+        val rnd = Random(21)
+        val frames = poses().map { r ->
+            val sway = Vec3(rnd.nextGaussian() * 0.05, rnd.nextGaussian() * 0.05, rnd.nextGaussian() * 0.03)
+            FrameImage(TestScene.renderRoom(r, th, tv, 240, 320, camOffset = 0.2, sway = sway), 240, 320, r, th, tv)
+        }
+        val res = Aligner(frames).run()
+        assertTrue(res.applied)
+        val pick = SeamSelect.pick(frames, res.candidates, yaw0)
+        println("STAT camera positions: rms room=%.3f° per-frame=%.3f° max|u|=%.2f · ".format(res.rmsDeg, res.offsetRmsDeg, res.maxOffset) +
+            res.candidates.indices.joinToString(" | ") { (if (it == pick.index) "*" else "") + res.candidates[it].name + " %.0f".format(pick.scores[it]) })
+        assertTrue("per-frame positions should fit better", res.offsetRmsDeg < 0.8 * res.rmsDeg)
+        assertTrue("offsets stay bounded", res.maxOffset < 0.8)
+        assertTrue(res.candidates.any { it.offsets != null })
     }
 }

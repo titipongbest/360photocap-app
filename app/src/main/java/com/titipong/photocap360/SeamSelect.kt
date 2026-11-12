@@ -22,7 +22,8 @@ object SeamSelect {
     private const val MARGIN = 0.97
 
     fun frames(images: List<FrameImage>, c: Aligner.Candidate): List<FrameImage> = images.mapIndexed { k, f ->
-        FrameImage(f.pixels, f.width, f.height, c.rotations[k], f.tanH * c.fovScale, f.tanV * c.fovScale, c.warps.getOrNull(k))
+        FrameImage(f.pixels, f.width, f.height, c.rotations[k], f.tanH * c.fovScale, f.tanV * c.fovScale, c.warps.getOrNull(k),
+            c.offsets?.getOrNull(k))
     }
 
     fun score(images: List<FrameImage>, c: Aligner.Candidate, yaw0: Double): Double {

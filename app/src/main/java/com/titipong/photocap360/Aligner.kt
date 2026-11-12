@@ -183,6 +183,9 @@ class Aligner(
         val warpRmsAfterDeg: Double = Double.NaN,
         /** Dense seam matches (regular grid in the overlaps, after the rotations are known). */
         val denseMatches: Int = 0,
+        /** Per-frame camera positions (option ค): rms with them (deg, NaN = not tried) and largest |u|. */
+        val offsetRmsDeg: Double = Double.NaN,
+        val maxOffset: Double = 0.0,
         /**
          * Alternatives for [SeamSelect] to choose from by seam quality; the first is this result
          * itself. Empty when the alignment wasn't applied.
@@ -198,10 +201,12 @@ class Aligner(
         val rhoWall: Double,
         val kappa: Double,
         val warps: List<FloatArray?>,
+        /** Per-frame camera position (see [ray]); null = all at the nominal spot. */
+        val offsets: List<FloatArray>? = null,
     )
 
     /** Geometry used to predict where a point of frame i lands in frame j. */
-    private class Geo(val rot: Array<DoubleArray>, val s: Double, val rw: Double, val kp: Double)
+    private class Geo(val rot: Array<DoubleArray>, val s: Double, val rw: Double, val kp: Double, val off: Array<DoubleArray>? = null)
 
     companion object {
         private const val LEVELS = 3
@@ -236,6 +241,12 @@ class Aligner(
         private val DENSE_NCC = doubleArrayOf(0.85, 0.75, 0.65)
         private const val DENSE_AMBIG = 0.05
         private const val SCALE_W_FREE = 4e-4
+        /**
+         * Per-frame camera position u (fraction of the nominal camera offset, see [ray]): prior weight
+         * and bound. |u| = 0.3 ≈ 7 cm of body sway when the camera is 25 cm from the rotation axis.
+         */
+        private const val OFF_W = 0.01
+        private const val OFF_MAX = 0.8
         private const val SCALE_W_FIXED = 1e6
         /**
          * Hard bound on the FOV scale (log): ±10 %. With ray-difference residuals a shrinking FOV
@@ -352,6 +363,14 @@ class Aligner(
         val fine = if (ok && meshWarp) fitWarps(all + dense, rot, g, FrameImage.WARP_GX, FrameImage.WARP_GY) else null
         val coarse = if (ok && meshWarp) fitWarps(all, rot, g, FrameImage.SPARSE_GX, FrameImage.SPARSE_GY) else null
         val wf = fine ?: coarse
+        // ค: let every frame have its own camera position (body sway between shots), Hugin TrX/TrY/TrZ-like.
+        class Offsets(val rot: Array<DoubleArray>, val off: Array<DoubleArray>, val rms: Double)
+        val offsets = if (ok && parallaxModel) try {
+            val r2 = Array(n) { rot[it].copyOf() }
+            val off = Array(n) { DoubleArray(3) }
+            bundleAdjust(inl, r2, g, 20, off)
+            Offsets(r2, off, sqrt(inl.sumOf { val e = residual(it, r2, g, off); e * e } / max(1, inl.size)))
+        } catch (e: Throwable) { null } else null
         val candidates = ArrayList<Candidate>()
         if (ok) {
             fun cand(name: String, s: Sol, w: WarpFit?) =
@@ -359,6 +378,12 @@ class Aligner(
             val fovName = if (sol === free) "FOV ปรับ" else "FOV กล้อง"
             candidates += cand("$fovName + บิดละเอียด", sol, wf)
             if (coarse != null && fine != null) candidates += cand("$fovName + บิดหยาบ", sol, coarse)
+            // ค: per-frame camera positions on top of the chosen solution (room model only).
+            if (parallaxModel && offsets != null) {
+                val ow = if (meshWarp) fitWarps(all + dense, offsets.rot, sol.g, FrameImage.WARP_GX, FrameImage.WARP_GY, offsets.off) else null
+                candidates += Candidate("$fovName + ตำแหน่งกล้อง + บิดละเอียด", offsets.rot.map { Rot.toFloat(it) }, exp(sigma), g[1], g[2],
+                    ow?.warps ?: List(n) { null }, offsets.off.map { u -> FloatArray(3) { u[it].toFloat() } })
+            }
             // The other FOV hypothesis, if it is sane (reuse the dense matches: they are image facts).
             val other = if (sol === free) fixed else free
             if (other != null && other.rms < 1.0 * DEG && abs(other.sigma) < 0.95 * SIGMA_MAX && other.maxDev < 30 * DEG &&
@@ -389,6 +414,8 @@ class Aligner(
             warpRmsBeforeDeg = wf?.rmsBefore ?: Double.NaN,
             warpRmsAfterDeg = wf?.rmsAfter ?: Double.NaN,
             denseMatches = dense.size,
+            offsetRmsDeg = (offsets?.rms ?: Double.NaN) / DEG,
+            maxOffset = offsets?.off?.maxOf { sqrt(it[0] * it[0] + it[1] * it[1] + it[2] * it[2]) } ?: 0.0,
             candidates = candidates,
         ).also { progress(1f) }
     }
@@ -409,8 +436,8 @@ class Aligner(
             while (y < g0.h - margin) {
                 var x = margin
                 while (x < g0.w - margin) {
-                    ray(geo.rot[i], th[i] * geo.s, tv[i] * geo.s, g0.nxOf(x.toDouble()), g0.nyOf(y.toDouble()), d, geo.rw, geo.kp)
-                    if (project(geo.rot[j], th[j] * geo.s, tv[j] * geo.s, d, q, geo.rw, geo.kp) && abs(q[0]) < 0.9 && abs(q[1]) < 0.9) {
+                    ray(geo.rot[i], th[i] * geo.s, tv[i] * geo.s, g0.nxOf(x.toDouble()), g0.nyOf(y.toDouble()), d, geo.rw, geo.kp, geo.off?.get(i))
+                    if (project(geo.rot[j], th[j] * geo.s, tv[j] * geo.s, d, q, geo.rw, geo.kp, geo.off?.get(j)) && abs(q[0]) < 0.9 && abs(q[1]) < 0.9) {
                         matchFeature(i, j, x.toDouble(), y.toDouble(), geo, DENSE_SEARCH, DENSE_NCC, DENSE_AMBIG, DENSE_MIN_STD)?.let { found += it }
                     }
                     x += DENSE_STEP
@@ -437,7 +464,7 @@ class Aligner(
      * small regularised least-squares fit:
      *     Σ_samples |bilinear(D)(pos) − target|² + λs Σ_neighbours |D_k − D_l|² + λ0 Σ |D_k|²
      */
-    private fun fitWarps(inl: List<Match>, rot: Array<DoubleArray>, g: DoubleArray, gx: Int, gy: Int): WarpFit {
+    private fun fitWarps(inl: List<Match>, rot: Array<DoubleArray>, g: DoubleArray, gx: Int, gy: Int, off: Array<DoubleArray>? = null): WarpFit {
         val s = exp(g[0]); val rw = g[1]; val kp = g[2]
         val nodes = gx * gy
         // Finer grids have more nodes per sample: scale the pull toward zero so the total stays alike.
@@ -447,11 +474,12 @@ class Aligner(
         var sumBefore = 0.0; var cnt = 0
         val errs = ArrayList<DoubleArray>() // per match: i, ax, ay, j, bx, by, ejx, ejy, eix, eiy
         for (m in inl) {
-            ray(rot[m.i], th[m.i] * s, tv[m.i] * s, m.ax, m.ay, d, rw, kp)
-            if (!project(rot[m.j], th[m.j] * s, tv[m.j] * s, d, q, rw, kp)) continue
+            val ui = off?.get(m.i); val uj = off?.get(m.j)
+            ray(rot[m.i], th[m.i] * s, tv[m.i] * s, m.ax, m.ay, d, rw, kp, ui)
+            if (!project(rot[m.j], th[m.j] * s, tv[m.j] * s, d, q, rw, kp, uj)) continue
             val ejx = m.bx - q[0]; val ejy = m.by - q[1]
-            ray(rot[m.j], th[m.j] * s, tv[m.j] * s, m.bx, m.by, d, rw, kp)
-            if (!project(rot[m.i], th[m.i] * s, tv[m.i] * s, d, q, rw, kp)) continue
+            ray(rot[m.j], th[m.j] * s, tv[m.j] * s, m.bx, m.by, d, rw, kp, uj)
+            if (!project(rot[m.i], th[m.i] * s, tv[m.i] * s, d, q, rw, kp, ui)) continue
             val eix = m.ax - q[0]; val eiy = m.ay - q[1]
             if (abs(ejx) > WARP_MAX * 2 || abs(ejy) > WARP_MAX * 2) continue
             val a = angle(ejx, ejy, m.j, s)
@@ -557,16 +585,20 @@ class Aligner(
     /** Pixel (nx, ny) of a frame → world direction of the scene point from the rotation centre. */
     private fun ray(
         r: DoubleArray, tanH: Double, tanV: Double, nx: Double, ny: Double, out: DoubleArray,
-        rw: Double = 0.0, kp: Double = 0.0,
+        rw: Double = 0.0, kp: Double = 0.0, u: DoubleArray? = null,
     ) {
         var vx = nx * tanH; var vy = ny * tanV; var vz = -1.0
         val vn = sqrt(vx * vx + vy * vy + vz * vz); vx /= vn; vy /= vn; vz /= vn
+        // Camera centre (device coords, in units of ρ): nominal (0,0,−1), moved by this frame's u.
+        val ccx = u?.get(0) ?: 0.0; val ccy = u?.get(1) ?: 0.0; val ccz = -1.0 - (u?.get(2) ?: 0.0)
+        val cdotv = ccx * vx + ccy * vy + ccz * vz
+        val cc = ccx * ccx + ccy * ccy + ccz * ccz
         var rho = rw
         for (iter in 0 until 3) {
-            // Point P = (0,0,−ρ) + s·v with |P| = 1.
-            val cv = -rho * vz
-            val sp = -cv + sqrt(cv * cv - rho * rho + 1)
-            val px = sp * vx; val py = sp * vy; val pz = -rho + sp * vz
+            // Point P = ρ·c + s·v with |P| = 1.
+            val cv = rho * cdotv
+            val sp = -cv + sqrt(max(0.0, cv * cv - rho * rho * cc + 1))
+            val px = rho * ccx + sp * vx; val py = rho * ccy + sp * vy; val pz = rho * ccz + sp * vz
             out[0] = r[0] * px + r[1] * py + r[2] * pz
             out[1] = r[3] * px + r[4] * py + r[5] * pz
             out[2] = r[6] * px + r[7] * py + r[8] * pz
@@ -580,12 +612,12 @@ class Aligner(
     /** World direction (from the rotation centre) → normalized image coords; false if behind the camera. */
     private fun project(
         r: DoubleArray, tanH: Double, tanV: Double, d: DoubleArray, out: DoubleArray,
-        rw: Double = 0.0, kp: Double = 0.0,
+        rw: Double = 0.0, kp: Double = 0.0, u: DoubleArray? = null,
     ): Boolean {
         val rho = if (rw == 0.0 && kp == 0.0) 0.0 else rhoOf(d[2], rw, kp)
-        val px = r[0] * d[0] + r[3] * d[1] + r[6] * d[2]
-        val py = r[1] * d[0] + r[4] * d[1] + r[7] * d[2]
-        val pz = r[2] * d[0] + r[5] * d[1] + r[8] * d[2] + rho
+        val px = r[0] * d[0] + r[3] * d[1] + r[6] * d[2] - rho * (u?.get(0) ?: 0.0)
+        val py = r[1] * d[0] + r[4] * d[1] + r[7] * d[2] - rho * (u?.get(1) ?: 0.0)
+        val pz = r[2] * d[0] + r[5] * d[1] + r[8] * d[2] + rho * (1 + (u?.get(2) ?: 0.0))
         val depth = -pz
         if (depth < 1e-6) return false
         out[0] = px / depth / tanH; out[1] = py / depth / tanV
@@ -594,8 +626,8 @@ class Aligner(
 
     /** Pixel of j (at gj's level) → pixel of i (at gi's level) using the gyro rotations. */
     private fun jToI(j: Int, i: Int, gj: GrayImage, gi: GrayImage, x: Double, y: Double, d: DoubleArray, q: DoubleArray, geo: Geo): Boolean {
-        ray(geo.rot[j], th[j] * geo.s, tv[j] * geo.s, gj.nxOf(x), gj.nyOf(y), d, geo.rw, geo.kp)
-        if (!project(geo.rot[i], th[i] * geo.s, tv[i] * geo.s, d, q, geo.rw, geo.kp)) return false
+        ray(geo.rot[j], th[j] * geo.s, tv[j] * geo.s, gj.nxOf(x), gj.nyOf(y), d, geo.rw, geo.kp, geo.off?.get(j))
+        if (!project(geo.rot[i], th[i] * geo.s, tv[i] * geo.s, d, q, geo.rw, geo.kp, geo.off?.get(i))) return false
         q[0] = gi.pxOf(q[0]); q[1] = gi.pyOf(q[1])
         return true
     }
@@ -644,8 +676,8 @@ class Aligner(
         val g0 = pyr[i][0]
         val anx = g0.nxOf(fx); val any = g0.nyOf(fy)
         val d = DoubleArray(3); val q = DoubleArray(2)
-        ray(geo.rot[i], th[i] * geo.s, tv[i] * geo.s, anx, any, d, geo.rw, geo.kp)
-        if (!project(geo.rot[j], th[j] * geo.s, tv[j] * geo.s, d, q, geo.rw, geo.kp)) return null
+        ray(geo.rot[i], th[i] * geo.s, tv[i] * geo.s, anx, any, d, geo.rw, geo.kp, geo.off?.get(i))
+        if (!project(geo.rot[j], th[j] * geo.s, tv[j] * geo.s, d, q, geo.rw, geo.kp, geo.off?.get(j))) return null
         if (abs(q[0]) > 0.95 || abs(q[1]) > 0.95) return null
         var cnx = q[0]; var cny = q[1]
 
@@ -730,15 +762,15 @@ class Aligner(
     // + scaleW·σ² + W_room·((ρ_wall−ρ₀)² + (κ−κ₀)²)
     // wᵢⱼ = min(frame weights): floor shots count 20 %.
 
-    private fun dirs(m: Match, rot: Array<DoubleArray>, g: DoubleArray, ui: DoubleArray, uj: DoubleArray) {
+    private fun dirs(m: Match, rot: Array<DoubleArray>, g: DoubleArray, ui: DoubleArray, uj: DoubleArray, off: Array<DoubleArray>? = null) {
         val s = exp(g[0])
-        ray(rot[m.i], th[m.i] * s, tv[m.i] * s, m.ax, m.ay, ui, g[1], g[2])
-        ray(rot[m.j], th[m.j] * s, tv[m.j] * s, m.bx, m.by, uj, g[1], g[2])
+        ray(rot[m.i], th[m.i] * s, tv[m.i] * s, m.ax, m.ay, ui, g[1], g[2], off?.get(m.i))
+        ray(rot[m.j], th[m.j] * s, tv[m.j] * s, m.bx, m.by, uj, g[1], g[2], off?.get(m.j))
     }
 
-    private fun residual(m: Match, rot: Array<DoubleArray>, g: DoubleArray): Double {
+    private fun residual(m: Match, rot: Array<DoubleArray>, g: DoubleArray, off: Array<DoubleArray>? = null): Double {
         val ui = DoubleArray(3); val uj = DoubleArray(3)
-        dirs(m, rot, g, ui, uj)
+        dirs(m, rot, g, ui, uj, off)
         val a = ui[0] - uj[0]; val b = ui[1] - uj[1]; val c = ui[2] - uj[2]
         return sqrt(a * a + b * b + c * c)
     }
@@ -750,10 +782,11 @@ class Aligner(
 
     private fun roomW() = if (parallaxModel) ROOM_W else SCALE_W_FIXED
 
-    private fun cost(ms: List<Match>, rot: Array<DoubleArray>, g: DoubleArray): Double {
+    private fun cost(ms: List<Match>, rot: Array<DoubleArray>, g: DoubleArray, off: Array<DoubleArray>? = null): Double {
         var c = 0.0
+        if (off != null) for (u in off) c += OFF_W * (u[0] * u[0] + u[1] * u[1] + u[2] * u[2])
         for (m in ms) {
-            val e = residual(m, rot, g)
+            val e = residual(m, rot, g, off)
             c += matchW(m) * (if (e < HUBER) e * e else 2 * HUBER * e - HUBER * HUBER)
         }
         for (k in 0 until n) {
@@ -769,24 +802,39 @@ class Aligner(
     }
 
     /** Levenberg-Marquardt. Updates [rot] and [g] in place. */
-    private fun bundleAdjust(ms: List<Match>, rot: Array<DoubleArray>, g: DoubleArray, iters: Int) {
+    /**
+     * Levenberg-Marquardt. Updates [rot] and [g] in place. With [off] (option ค) it also solves a
+     * camera position per frame; the globals are then held fixed (a common shift of all cameras
+     * along the axis is the same as changing ρ).
+     */
+    private fun bundleAdjust(ms: List<Match>, rot: Array<DoubleArray>, g: DoubleArray, iters: Int, off: Array<DoubleArray>? = null) {
         val ng = 3
-        val np = 3 * n + ng
+        val no = if (off != null) 3 * n else 0
+        val np = 3 * n + ng + no
         val g0 = 3 * n
+        val o0 = 3 * n + ng
         var lambda = 1e-3
-        var cur = cost(ms, rot, g)
+        var cur = cost(ms, rot, g, off)
         val ui = DoubleArray(3); val uj = DoubleArray(3)
-        val pi = Array(ng) { DoubleArray(3) }; val pj = Array(ng) { DoubleArray(3) }
-        val cols = IntArray(6 + ng); val vals = DoubleArray(6 + ng)
+        val pi = Array(ng + 6) { DoubleArray(3) }; val pj = Array(ng + 6) { DoubleArray(3) }
+        val nc = 6 + ng + (if (off != null) 6 else 0)
+        val cols = IntArray(nc); val vals = DoubleArray(nc)
         val eps = 1e-6
 
         for (it in 0 until iters) {
             val a = DoubleArray(np * np); val b = DoubleArray(np)
             for (m in ms) {
-                dirs(m, rot, g, ui, uj)
+                dirs(m, rot, g, ui, uj, off)
                 for (q in 0 until ng) {
                     val gp = g.copyOf(); gp[q] += eps
-                    dirs(m, rot, gp, pi[q], pj[q])
+                    dirs(m, rot, gp, pi[q], pj[q], off)
+                }
+                if (off != null) for (q in 0 until 6) {
+                    val f = if (q < 3) m.i else m.j
+                    val keep = off[f][q % 3]
+                    off[f][q % 3] = keep + eps
+                    dirs(m, rot, g, pi[ng + q], pj[ng + q], off)
+                    off[f][q % 3] = keep
                 }
                 val r0 = ui[0] - uj[0]; val r1 = ui[1] - uj[1]; val r2 = ui[2] - uj[2]
                 val e = sqrt(r0 * r0 + r1 * r1 + r2 * r2)
@@ -799,6 +847,10 @@ class Aligner(
                     for (q in 0 until ng) vals[6 + q] = ((pi[q][row] - pj[q][row]) - res[row]) / eps
                     for (c in 0..2) { cols[c] = 3 * m.i + c; cols[3 + c] = 3 * m.j + c }
                     for (q in 0 until ng) cols[6 + q] = g0 + q
+                    if (off != null) for (q in 0 until 6) {
+                        vals[6 + ng + q] = ((pi[ng + q][row] - pj[ng + q][row]) - res[row]) / eps
+                        cols[6 + ng + q] = o0 + 3 * (if (q < 3) m.i else m.j) + q % 3
+                    }
                     for (p in cols.indices) {
                         val vp = vals[p]; if (vp == 0.0) continue
                         b[cols[p]] += w * vp * res[row]
@@ -834,6 +886,12 @@ class Aligner(
             a[g0 * np + g0] += scaleW; b[g0] += scaleW * g[0]
             a[(g0 + 1) * np + g0 + 1] += roomW(); b[g0 + 1] += roomW() * (g[1] - rw0)
             a[(g0 + 2) * np + g0 + 2] += roomW(); b[g0 + 2] += roomW() * (g[2] - kp0)
+            if (off != null) {
+                for (q in 0 until ng) a[(g0 + q) * np + g0 + q] += 1e9  // hold the globals
+                for (k in 0 until n) for (c in 0..2) {
+                    a[(o0 + 3 * k + c) * np + o0 + 3 * k + c] += OFF_W; b[o0 + 3 * k + c] += OFF_W * off[k][c]
+                }
+            }
 
             var improved = false
             for (attempt in 0 until 6) {
@@ -849,10 +907,13 @@ class Aligner(
                     if (parallaxModel) (g[1] - delta[g0 + 1]).coerceIn(0.0, RHO_MAX) else 0.0,
                     if (parallaxModel) (g[2] - delta[g0 + 2]).coerceIn(0.0, KAP_MAX) else 0.0,
                 )
-                val c = cost(ms, cand, cg)
+                val co = off?.let { o -> Array(n) { k -> DoubleArray(3) { c -> (o[k][c] - delta[o0 + 3 * k + c]).coerceIn(-OFF_MAX, OFF_MAX) } } }
+                if (off != null) g.copyInto(cg)
+                val c = cost(ms, cand, cg, co)
                 if (c < cur) {
                     val gain = cur - c
                     for (k in 0 until n) rot[k] = cand[k]
+                    if (off != null) for (k in 0 until n) co!![k].copyInto(off[k])
                     cg.copyInto(g); cur = c; lambda = max(lambda / 3, 1e-9)
                     improved = true
                     if (gain < 1e-12 * (1 + cur)) return
