@@ -17,8 +17,6 @@ android {
         versionCode = ciRun ?: 1
         versionName = if (ciRun != null) "0.2.$ciRun" else "0.2.0-dev"
         buildConfigField("String", "GIT_SHA", "\"$gitSha\"")
-        // ONNX Runtime (AI depth) ships native code: phones only.
-        ndk { abiFilters += listOf("arm64-v8a", "armeabi-v7a") }
     }
 
     buildTypes {
@@ -54,9 +52,6 @@ dependencies {
     implementation("androidx.camera:camera-camera2:$camerax")
     implementation("androidx.camera:camera-lifecycle:$camerax")
     implementation("androidx.camera:camera-view:$camerax")
-
-    // AI depth (Depth Anything V2 Small, downloaded on first use)
-    implementation("com.microsoft.onnxruntime:onnxruntime-android:1.20.0")
 
     testImplementation("junit:junit:4.13.2")
 }

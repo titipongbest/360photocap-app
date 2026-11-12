@@ -69,27 +69,6 @@ private object TestScene {
         return px
     }
 
-    /** Distance from the camera along each pixel's ray in [renderRoom]'s room (metres). */
-    fun roomDistance(r: FloatArray, th: Double, tv: Double, w: Int, h: Int, camOffset: Double): FloatArray {
-        val c = SphereMath.cameraForward(r) * camOffset
-        val lo = doubleArrayOf(-2.0, -3.0, -1.3); val hi = doubleArrayOf(2.5, 2.0, 1.4)
-        val out = FloatArray(w * h)
-        for (y in 0 until h) for (x in 0 until w) {
-            val nx = (x + 0.5) / w * 2 - 1
-            val ny = 1 - (y + 0.5) / h * 2
-            val d = SphereMath.rotate(r, Vec3(nx * th, ny * tv, -1.0)).normalized()
-            val cc = doubleArrayOf(c.x, c.y, c.z); val dd = doubleArrayOf(d.x, d.y, d.z)
-            var t = Double.MAX_VALUE
-            for (a in 0..2) {
-                if (abs(dd[a]) < 1e-9) continue
-                val ta = ((if (dd[a] > 0) hi[a] else lo[a]) - cc[a]) / dd[a]
-                if (ta > 0 && ta < t) t = ta
-            }
-            out[y * w + x] = t.toFloat()
-        }
-        return out
-    }
-
     fun gray(v: Double, gain: Double = 1.0): Int {
         val g = (v * gain * 255).toInt().coerceIn(0, 255)
         return (0xFF shl 24) or (g shl 16) or (g shl 8) or g
@@ -420,40 +399,5 @@ class SeamTest {
         assertTrue("per-frame positions should fit better", res.offsetRmsDeg < 0.8 * res.rmsDeg)
         assertTrue("offsets stay bounded", res.maxOffset < 0.8)
         assertTrue(res.candidates.any { it.offsets != null })
-    }
-
-    /**
-     * AI depth path: per-frame inverse depth known only up to scale and shift (like the model's
-     * output) must be calibrated, fused into a ρ map, and explain the matches better than the box
-     * room model (this room's walls are at different distances, which ρ_wall can't express).
-     */
-    @Test fun aiDepthFusionBeatsRoomModel() {
-        val rnd = Random(8)
-        val truth = poses()
-        val frames = truth.map { r -> FrameImage(TestScene.renderRoom(r, th, tv, 240, 320, camOffset = 0.2), 240, 320, r, th, tv) }
-        val aligner = Aligner(frames)
-        val res = aligner.run()
-        assertTrue(res.applied)
-        val c = res.candidates.first()
-        val depth = truth.map { r ->
-            val dw = 60; val dh = 80
-            val t = TestScene.roomDistance(r, th, tv, dw, dh, 0.2)
-            val a = 0.5 + rnd.nextDouble() * 2; val b = rnd.nextDouble() * 0.5
-            DepthImage(dw, dh, FloatArray(dw * dh) { (a / t[it] + b + rnd.nextGaussian() * 0.01).toFloat() })
-        }
-        val fr = SeamSelect.frames(frames, c)
-        val init = DepthFusion.fits(fr, depth, c.rhoWall, c.kappa)
-        val cal = aligner.calibrateDepth(c, depth, init)
-        val fused = DepthFusion.build(fr, depth, c.rhoWall, c.kappa, cal)
-        val refit = aligner.refineWithDepth(c, fused.map)
-        println("STAT AI depth: coverage %.0f%% · fits ok ${fused.fits.count { it?.ok == true }}/${frames.size} · match rms room %.3f° → AI %.3f° · warp after %.3f°"
-            .format(fused.coverage * 100, refit.rmsRoomDeg, refit.rmsDepthDeg, refit.warpAfterDeg))
-        assertTrue(fused.fits.all { it?.ok == true })
-        assertTrue("AI depth should explain the matches better", refit.rmsDepthDeg < 0.7 * refit.rmsRoomDeg)
-        // Renders without errors and covers the sphere.
-        val core = StitchCore(SeamSelect.frames(frames, refit.candidate), yaw0)
-        core.rhoMap = fused.map
-        core.prepare(512, 256)
-        assertTrue((core.seamStats?.uncovered ?: 1) < 512 * 256 / 100)
     }
 }

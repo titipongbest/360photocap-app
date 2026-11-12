@@ -31,11 +31,7 @@ import java.util.Locale
 
 class StitchActivity : ComponentActivity() {
 
-    companion object {
-        const val EXTRA_DIR = "dir"
-        /** Stitch with AI depth: result goes to pano_ai.jpg (not the gallery) and opens in the viewer. */
-        const val EXTRA_AI = "ai"
-    }
+    companion object { const val EXTRA_DIR = "dir" }
 
     private lateinit var root: FrameLayout
     private lateinit var status: TextView
@@ -70,39 +66,12 @@ class StitchActivity : ComponentActivity() {
         if (started) return
         started = true
         val dir = File(intent.getStringExtra(EXTRA_DIR) ?: run { finish(); return })
-        val ai = intent.getBooleanExtra(EXTRA_AI, false)
         lifecycleScope.launch {
-            var model: DepthModel? = null
             try {
-                if (ai) {
-                    if (!DepthModel.isDownloaded(this@StitchActivity)) {
-                        status.text = getString(R.string.ai_downloading, 0)
-                        withContext(Dispatchers.IO) {
-                            DepthModel.download(this@StitchActivity) { p ->
-                                runOnUiThread {
-                                    bar.progress = (p * 1000).toInt()
-                                    status.text = getString(R.string.ai_downloading, (p * 100).toInt())
-                                }
-                            }
-                        }
-                    }
-                    status.setText(R.string.ai_stitching)
-                    model = withContext(Dispatchers.IO) { DepthModel.load(this@StitchActivity) }
-                }
                 val session = withContext(Dispatchers.IO) { CaptureSession.load(dir) }
                 val t0 = System.currentTimeMillis()
-                val result = Stitcher.stitch(session, model) { p ->
+                val result = Stitcher.stitch(session) { p ->
                     runOnUiThread { bar.progress = (p * 1000).toInt() }
-                }
-                model?.close(); model = null
-                if (ai) {
-                    val bytes = withContext(Dispatchers.Default) { PanoSaver.encode(result.bitmap) }
-                    result.bitmap.recycle()
-                    withContext(Dispatchers.IO) { File(dir, PanoStore.PANO_AI).writeBytes(bytes) }
-                    startActivity(Intent(this@StitchActivity, ViewerActivity::class.java)
-                        .putExtra(EXTRA_DIR, dir.absolutePath).putExtra(ViewerActivity.EXTRA_AI, true))
-                    finish()
-                    return@launch
                 }
                 Log.i("Stitch", "${result.width}x${result.height} in ${System.currentTimeMillis() - t0} ms")
                 val bytes = withContext(Dispatchers.Default) { PanoSaver.encode(result.bitmap) }
@@ -122,8 +91,7 @@ class StitchActivity : ComponentActivity() {
                 finish()
             } catch (e: Throwable) {
                 Log.e("Stitch", "failed", e)
-                model?.close()
-                status.text = (if (ai) getString(R.string.ai_failed) else "ต่อภาพไม่สำเร็จ") + ": ${e.message}"
+                status.text = "ต่อภาพไม่สำเร็จ: ${e.message}"
             }
         }
     }
