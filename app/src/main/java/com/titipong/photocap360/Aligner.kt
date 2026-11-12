@@ -8,6 +8,7 @@ import kotlin.math.acos
 import kotlin.math.atan
 import kotlin.math.cos
 import kotlin.math.exp
+import kotlin.math.ln
 import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.roundToInt
@@ -267,6 +268,10 @@ class Aligner(
     private val tv = DoubleArray(n) { frames[it].tanV }
     private lateinit var pyr: Array<Array<GrayImage>>
     private val gyroGeo = Geo(rot0, 1.0, rw0, kp0)
+    /** AI depth (see [refineWithDepth]): when set, ρ comes from it instead of the room model. */
+    private var depthMap: RhoMap? = null
+    /** All feature + dense matches of the last [run], for [refineWithDepth]. */
+    private var lastMatches: List<Match> = emptyList()
 
     fun run(progress: (Float) -> Unit = {}): Result {
         if (n < 2) return unchanged(0)
@@ -371,6 +376,7 @@ class Aligner(
             bundleAdjust(inl, r2, g, 20, off)
             Offsets(r2, off, sqrt(inl.sumOf { val e = residual(it, r2, g, off); e * e } / max(1, inl.size)))
         } catch (e: Throwable) { null } else null
+        lastMatches = all + dense
         val candidates = ArrayList<Candidate>()
         if (ok) {
             fun cand(name: String, s: Sol, w: WarpFit?) =
@@ -447,6 +453,143 @@ class Aligner(
             progress(done.incrementAndGet().toFloat() / pairs.size)
         }
         return found.toList()
+    }
+
+    /**
+     * Per-frame depth scale from the matches: ρ = αₖ·disp + βₖ, so a match a (frame i) ↔ b (frame j)
+     * gives two points on the scene sphere (camera at ρ·c, as in [ray]) that must coincide.
+     * Gauss-Newton over all (αₖ, βₖ) with rotations fixed and a weak pull toward [init] (the
+     * room-model fit). Frames without depth keep their initial fit.
+     */
+    fun calibrateDepth(c: Candidate, depth: List<DepthImage?>, init: List<DepthFusion.Fit?>): List<DepthFusion.Fit?> {
+        val rot = Array(n) { Rot.ofFloat(c.rotations[it]) }
+        val s = c.fovScale
+        val off = c.offsets?.let { o -> Array(n) { k -> DoubleArray(3) { o[k][it].toDouble() } } }
+        val ok = BooleanArray(n) { init.getOrNull(it)?.ok == true && depth.getOrNull(it) != null }
+        class M(val i: Int, val ax: Double, val ay: Double, val da: Double, val j: Int, val bx: Double, val by: Double, val db: Double)
+        val ms = lastMatches.mapNotNull { m ->
+            if (!ok[m.i] || !ok[m.j]) return@mapNotNull null
+            val da = DepthFusion.sample(depth[m.i]!!, m.ax, m.ay); val db = DepthFusion.sample(depth[m.j]!!, m.bx, m.by)
+            if (da.isNaN() || db.isNaN()) null else M(m.i, m.ax, m.ay, da, m.j, m.bx, m.by, db)
+        }
+        val p = DoubleArray(2 * n); val p0 = DoubleArray(2 * n)
+        for (k in 0 until n) init.getOrNull(k)?.let { p[2 * k] = it.alpha; p[2 * k + 1] = it.beta }
+        p.copyInto(p0)
+        if (ms.size < 3 * n) return init
+        // Prior scale: relative change of α, and β in ρ units (ρ ≈ 0.1).
+        val wA = 1e-4; val wB = 1e-4 / (0.1 * 0.1)
+        fun rhoOfP(pp: DoubleArray, k: Int, d: Double) = (pp[2 * k] * d + pp[2 * k + 1]).coerceIn(0.005, 0.6)
+        val ui = DoubleArray(3); val uj = DoubleArray(3)
+        fun res(pp: DoubleArray, m: M, out: DoubleArray) {
+            ray(rot[m.i], th[m.i] * s, tv[m.i] * s, m.ax, m.ay, ui, rhoOfP(pp, m.i, m.da), 0.0, off?.get(m.i))
+            ray(rot[m.j], th[m.j] * s, tv[m.j] * s, m.bx, m.by, uj, rhoOfP(pp, m.j, m.db), 0.0, off?.get(m.j))
+            out[0] = ui[0] - uj[0]; out[1] = ui[1] - uj[1]; out[2] = ui[2] - uj[2]
+        }
+        fun cost(pp: DoubleArray): Double {
+            val r = DoubleArray(3); var cst = 0.0
+            for (m in ms) {
+                res(pp, m, r); val e = sqrt(r[0] * r[0] + r[1] * r[1] + r[2] * r[2])
+                cst += if (e < HUBER) e * e else 2 * HUBER * e - HUBER * HUBER
+            }
+            for (k in 0 until n) if (ok[k]) {
+                val da = (pp[2 * k] - p0[2 * k]) / p0[2 * k]; val db = pp[2 * k + 1] - p0[2 * k + 1]
+                cst += wA * da * da + wB * db * db
+            }
+            return cst
+        }
+        val np = 2 * n
+        var cur = cost(p); var lambda = 1e-3
+        val r0 = DoubleArray(3); val r1 = DoubleArray(3)
+        val eps = 1e-5
+        for (it in 0 until 12) {
+            val a = DoubleArray(np * np); val b = DoubleArray(np)
+            val idx = IntArray(4); val jac = Array(4) { DoubleArray(3) }
+            for (m in ms) {
+                res(p, m, r0)
+                val e = sqrt(r0[0] * r0[0] + r0[1] * r0[1] + r0[2] * r0[2])
+                val w = if (e < HUBER) 1.0 else HUBER / e
+                idx[0] = 2 * m.i; idx[1] = 2 * m.i + 1; idx[2] = 2 * m.j; idx[3] = 2 * m.j + 1
+                for (q in 0..3) {
+                    val keep = p[idx[q]]; p[idx[q]] = keep + eps * (if (q % 2 == 0) max(1.0, abs(keep)) else 1.0)
+                    val h = p[idx[q]] - keep
+                    res(p, m, r1); p[idx[q]] = keep
+                    for (c3 in 0..2) jac[q][c3] = (r1[c3] - r0[c3]) / h
+                }
+                for (q in 0..3) {
+                    for (c3 in 0..2) b[idx[q]] += w * jac[q][c3] * r0[c3]
+                    for (q2 in 0..3) { var v = 0.0; for (c3 in 0..2) v += jac[q][c3] * jac[q2][c3]; a[idx[q] * np + idx[q2]] += w * v }
+                }
+            }
+            for (k in 0 until n) {
+                if (!ok[k]) { a[2 * k * np + 2 * k] += 1e9; a[(2 * k + 1) * np + 2 * k + 1] += 1e9; continue }
+                val sa = wA / (p0[2 * k] * p0[2 * k])
+                a[2 * k * np + 2 * k] += sa; b[2 * k] += sa * (p[2 * k] - p0[2 * k])
+                a[(2 * k + 1) * np + 2 * k + 1] += wB; b[2 * k + 1] += wB * (p[2 * k + 1] - p0[2 * k + 1])
+            }
+            var improved = false
+            for (attempt in 0 until 6) {
+                val dmp = a.copyOf()
+                for (d in 0 until np) dmp[d * np + d] += lambda * a[d * np + d] + 1e-15
+                val delta = solve(dmp, b, np)
+                if (delta == null) { lambda *= 10; continue }
+                val cand = DoubleArray(np) { p[it] - delta[it] }
+                for (k in 0 until n) if (cand[2 * k] <= 0) cand[2 * k] = p[2 * k] * 0.5
+                val cc = cost(cand)
+                if (cc < cur) {
+                    val gain = cur - cc
+                    cand.copyInto(p); cur = cc; lambda = max(lambda / 3, 1e-9); improved = true
+                    if (gain < 1e-10 * (1 + cur)) return fitsOf(p, ok, init)
+                    break
+                }
+                lambda *= 5
+            }
+            if (!improved) break
+        }
+        return fitsOf(p, ok, init)
+    }
+
+    private fun fitsOf(p: DoubleArray, ok: BooleanArray, init: List<DepthFusion.Fit?>) =
+        List(n) { k -> if (ok[k]) DepthFusion.Fit(p[2 * k], p[2 * k + 1], p[2 * k] > 0) else init.getOrNull(k) }
+
+    /** Result of [refineWithDepth]: the candidate re-warped for AI depth, and match errors (deg). */
+    class DepthRefit(val candidate: Candidate, val rmsRoomDeg: Double, val rmsDepthDeg: Double, val warpAfterDeg: Double)
+
+    /**
+     * Re-fits the mesh warps of [c] with ρ from [map] (AI depth) instead of the room model, using the
+     * matches of the last [run]. Rotations and camera positions stay. Also reports how well the
+     * matches agree under each depth model (the warps were fitted to the room model's leftovers, so
+     * keeping them with AI depth would correct twice).
+     */
+    fun refineWithDepth(c: Candidate, map: RhoMap): DepthRefit {
+        val rot = Array(n) { Rot.ofFloat(c.rotations[it]) }
+        val g = doubleArrayOf(ln(c.fovScale), c.rhoWall, c.kappa)
+        val off = c.offsets?.let { o -> Array(n) { k -> DoubleArray(3) { o[k][it].toDouble() } } }
+        val ms = lastMatches
+        fun rms(): Double {
+            if (ms.isEmpty()) return Double.NaN
+            val e = ms.map { residual(it, rot, g, off) }.sorted()
+            val keep = e.take((e.size * 0.9).toInt().coerceAtLeast(1)) // drop gross mismatches
+            return sqrt(keep.sumOf { it * it } / keep.size) / DEG
+        }
+        depthMap = null
+        val before = rms()
+        depthMap = map
+        try {
+            // Re-solve the rotations (and camera positions) under the AI depth: they were bent to
+            // fit the room model's errors. Gross mismatches out first, globals held.
+            val res0 = ms.map { residual(it, rot, g, off) }
+            val med = res0.sorted().getOrElse(res0.size / 2) { 0.0 }
+            val inl = ms.filterIndexed { k, _ -> res0[k] < max(0.01, 4 * med) }
+            scaleW = SCALE_W_FIXED
+            if (inl.size >= 3 * n) bundleAdjust(inl, rot, g, 15, off)
+            val after = rms()
+            val w = if (meshWarp && ms.isNotEmpty()) fitWarps(ms, rot, g, FrameImage.WARP_GX, FrameImage.WARP_GY, off) else null
+            return DepthRefit(
+                Candidate(c.name + " + AI ความลึก", rot.map { Rot.toFloat(it) }, c.fovScale, c.rhoWall, c.kappa, w?.warps ?: List(n) { null },
+                    off?.map { u -> FloatArray(3) { u[it].toFloat() } }),
+                before, after, w?.rmsAfter ?: Double.NaN,
+            )
+        } finally { depthMap = null }
     }
 
     // ---------------- mesh warp ----------------
@@ -594,7 +737,7 @@ class Aligner(
         val cdotv = ccx * vx + ccy * vy + ccz * vz
         val cc = ccx * ccx + ccy * ccy + ccz * ccz
         var rho = rw
-        for (iter in 0 until 3) {
+        for (iter in 0 until (if (depthMap != null) 6 else 3)) {
             // Point P = ρ·c + s·v with |P| = 1.
             val cv = rho * cdotv
             val sp = -cv + sqrt(max(0.0, cv * cv - rho * rho * cc + 1))
@@ -602,8 +745,9 @@ class Aligner(
             out[0] = r[0] * px + r[1] * py + r[2] * pz
             out[1] = r[3] * px + r[4] * py + r[5] * pz
             out[2] = r[6] * px + r[7] * py + r[8] * pz
-            if (kp == 0.0) break
-            val rho2 = rhoOf(out[2], rw, kp)
+            val dm = depthMap
+            if (dm == null && kp == 0.0) break
+            val rho2 = dm?.at(out[0], out[1], out[2]) ?: rhoOf(out[2], rw, kp)
             if (abs(rho2 - rho) < 1e-7) break
             rho = rho2
         }
@@ -614,7 +758,8 @@ class Aligner(
         r: DoubleArray, tanH: Double, tanV: Double, d: DoubleArray, out: DoubleArray,
         rw: Double = 0.0, kp: Double = 0.0, u: DoubleArray? = null,
     ): Boolean {
-        val rho = if (rw == 0.0 && kp == 0.0) 0.0 else rhoOf(d[2], rw, kp)
+        val dm = depthMap
+        val rho = if (dm != null) dm.at(d[0], d[1], d[2]) else if (rw == 0.0 && kp == 0.0) 0.0 else rhoOf(d[2], rw, kp)
         val px = r[0] * d[0] + r[3] * d[1] + r[6] * d[2] - rho * (u?.get(0) ?: 0.0)
         val py = r[1] * d[0] + r[4] * d[1] + r[7] * d[2] - rho * (u?.get(1) ?: 0.0)
         val pz = r[2] * d[0] + r[5] * d[1] + r[8] * d[2] + rho * (1 + (u?.get(2) ?: 0.0))

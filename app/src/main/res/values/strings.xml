@@ -51,4 +51,22 @@
     <string name="gyro_on">โหมด 360°: ขยับมือถือเพื่อมองรอบๆ</string>
     <string name="gyro_off">โหมดลากนิ้ว</string>
     <string name="credit">By NorthXbar</string>
+
+    <string name="ai_desc">ต่อภาพด้วย AI ความลึก</string>
+    <string name="ai_title">ลองต่อด้วย AI</string>
+    <string name="ai_explain">AI จะประมาณระยะของทุกจุดในภาพ (Depth Anything V2) แล้วต่อภาพใหม่ตามระยะจริง ช่วยของที่อยู่ใกล้กล้อง เช่นโต๊ะ เก้าอี้ เสา
+
+ผลจะบันทึกแยกจากภาพเดิม ดูเทียบแล้วเลือกได้ว่าจะใช้แบบไหน ใช้เวลานานกว่าปกติ</string>
+    <string name="ai_download_note">ครั้งแรกต้องดาวน์โหลดโมเดล AI ประมาณ 27 MB (ครั้งเดียว ต้องต่ออินเทอร์เน็ต)</string>
+    <string name="ai_start">เริ่ม</string>
+    <string name="ai_downloading">กำลังดาวน์โหลดโมเดล AI %1$d%%</string>
+    <string name="ai_stitching">กำลังต่อภาพด้วย AI ความลึก</string>
+    <string name="ai_failed">ต่อด้วย AI ไม่สำเร็จ</string>
+    <string name="ai_viewing">ผลจาก AI · เทียบกับแบบเดิมแล้วเลือกใช้</string>
+    <string name="ai_original">แบบเดิม</string>
+    <string name="ai_use">ใช้ผล AI</string>
+    <string name="ai_use_confirm">แทนที่ภาพ 360° เดิมด้วยผลจาก AI? (ภาพในแกลเลอรีจะถูกแทนที่ด้วย)</string>
+    <string name="ai_exists">มีผลต่อภาพด้วย AI อยู่แล้ว</string>
+    <string name="ai_view">ดูผล AI</string>
+    <string name="ai_redo">ต่อ AI ใหม่</string>
 </resources>

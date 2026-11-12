@@ -134,6 +134,8 @@ class StitchCore(private val frames: List<FrameImage>, private val yaw0: Double)
      */
     var rhoWall = 0.0
     var kappa = 0.0
+    /** AI depth: ρ for every direction (overrides [rhoWall]/[kappa] when set). */
+    var rhoMap: RhoMap? = null
 
     /** Equalise exposure between frames in [prepare]. */
     var gainCompensation = true
@@ -177,7 +179,8 @@ class StitchCore(private val frames: List<FrameImage>, private val yaw0: Double)
         cf: IntArray, cm: DoubleArray, cx: DoubleArray, cy: DoubleArray,
     ): Int {
         var cnt = 0
-        val rho = if (rhoWall == 0.0 && kappa == 0.0) 0.0 else min(0.6, max(rhoWall, kappa * abs(dz)))
+        val rm = rhoMap
+        val rho = if (rm != null) rm.at(dx, dy, dz) else if (rhoWall == 0.0 && kappa == 0.0) 0.0 else min(0.6, max(rhoWall, kappa * abs(dz)))
         for (i in frames.indices) {
             val f = frames[i]
             if (dx * f.fwdX + dy * f.fwdY + dz * f.fwdZ < f.cosCull) continue

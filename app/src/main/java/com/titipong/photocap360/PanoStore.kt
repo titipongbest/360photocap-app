@@ -38,6 +38,9 @@ object PanoStore {
     const val PANO = "pano.jpg"
     const val THUMB = "thumb.jpg"
     const val DIAG = "diag.txt"
+    /** Result of "stitch with AI depth", kept beside the normal one until the user picks it. */
+    const val PANO_AI = "pano_ai.jpg"
+    const val DIAG_AI = "diag_ai.txt"
     const val GALLERY_URI = "gallery_uri.txt"
     const val FOLDER = "360PhotoCap"
 

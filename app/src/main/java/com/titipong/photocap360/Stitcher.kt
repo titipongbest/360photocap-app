@@ -70,7 +70,11 @@ object Stitcher {
         }
     }
 
-    suspend fun stitch(session: CaptureSession, onProgress: (Float) -> Unit): Result = withContext(Dispatchers.Default) {
+    /**
+     * [ai]: also estimate depth with the AI model (DepthModel) and stitch with it instead of the box
+     * room model; the diagnostics then go to diag_ai.txt.
+     */
+    suspend fun stitch(session: CaptureSession, ai: DepthModel? = null, onProgress: (Float) -> Unit): Result = withContext(Dispatchers.Default) {
         val maxMem = Runtime.getRuntime().maxMemory()
         // The straight-down shot always contains the photographer's legs; skip it and fill the floor
         // under the feet with a smooth patch instead (see StitchCore.fillPoles).
@@ -86,7 +90,8 @@ object Stitcher {
         val times = ArrayList<String>()
 
         val shot = session.frames.size
-        diag.append("360 PhotoCap v${BuildConfig.VERSION_NAME} (${BuildConfig.GIT_SHA}) · By NorthXbar\n")
+        diag.append("360 PhotoCap v${BuildConfig.VERSION_NAME} (${BuildConfig.GIT_SHA}) · By NorthXbar")
+        diag.append(if (ai != null) " · ต่อด้วย AI ความลึก\n" else "\n")
         diag.append("ภาพ: $shot").append(if (session.targetCount > 0) "/${session.targetCount}" else "")
         if (session.targetCount in 1..Int.MAX_VALUE && shot < session.targetCount) diag.append(" (ขาด ${session.targetCount - shot} → มีส่วนที่ไม่มีภาพ)")
         if (shot > n) diag.append(" · ไม่ใช้ภาพพื้นใต้เท้า ${shot - n} ภาพ (เติมพื้นให้แทน)")
@@ -119,8 +124,9 @@ object Stitcher {
         val manual = EditState.load(File(session.dir, EditState.MANUAL))
 
         // Refine gyro rotations + FOV from image content so overlaps line up.
+        val aligner = Aligner(images)
         val align = if (manual != null) null else try {
-            Aligner(images).run { p -> onProgress(0.15f + 0.27f * p) }
+            aligner.run { p -> onProgress(0.15f + (if (ai != null) 0.2f else 0.27f) * p) }
         } catch (e: Throwable) {
             Log.e("Stitch", "alignment failed, using gyro only", e); null
         }
@@ -160,7 +166,7 @@ object Stitcher {
         var chosen: Aligner.Candidate? = align?.candidates?.firstOrNull()
         if (manual == null && align != null && align.applied && align.candidates.size > 1) {
             try {
-                val pick = SeamSelect.pick(images, align.candidates, session.yaw0) { p -> onProgress(0.42f + 0.08f * p) }
+                val pick = SeamSelect.pick(images, align.candidates, session.yaw0) { p -> onProgress((if (ai != null) 0.35f else 0.42f) + 0.08f * p) }
                 chosen = align.candidates[pick.index]
                 diag.append("\nเลือกจากคุณภาพรอยต่อ: ${chosen.name}")
                 diag.append(align.candidates.indices.joinToString(" · ", " (", ")") { k ->
@@ -171,6 +177,31 @@ object Stitcher {
                 Log.e("Stitch", "seam selection failed", e)
             }
             times += "เลือก ${lap()}"
+        }
+        // AI depth: per-frame relative depth → scale per frame (room model, then matches) → one ρ map.
+        var rhoMap: RhoMap? = null
+        if (ai != null && manual == null && align != null && align.applied && chosen != null) {
+            try {
+                val base = SeamSelect.frames(images, chosen)
+                val depth = images.mapIndexed { k, f ->
+                    runCatching { ai.infer(f.pixels, f.width, f.height) }.getOrNull()
+                        .also { onProgress(0.43f + 0.05f * (k + 1) / n) }
+                }
+                val init = DepthFusion.fits(base, depth, chosen.rhoWall, chosen.kappa)
+                val cal = aligner.calibrateDepth(chosen, depth, init)
+                val fused = DepthFusion.build(base, depth, chosen.rhoWall, chosen.kappa, cal)
+                val refit = aligner.refineWithDepth(chosen, fused.map)
+                diag.append("\nAI ความลึก: ${depth.count { it != null }}/$n ภาพ · ปรับสเกลได้ ${fused.fits.count { it?.ok == true }} ภาพ · ครอบคลุม %.0f%%"
+                    .format(fused.coverage * 100))
+                diag.append("\n  จุดคู่คลาด (90%% ที่ดีสุด): โมเดลห้อง %.2f° → AI %.2f°".format(refit.rmsRoomDeg, refit.rmsDepthDeg))
+                if (refit.rmsDepthDeg > refit.rmsRoomDeg * 1.05) diag.append(" ⚠ AI ไม่ช่วยในภาพนี้")
+                chosen = refit.candidate
+                rhoMap = fused.map
+            } catch (e: Throwable) {
+                Log.e("Stitch", "AI depth failed", e)
+                diag.append("\nAI ความลึก: ผิดพลาด (${e.javaClass.simpleName}: ${e.message}) → ใช้โมเดลห้อง")
+            }
+            times += "AI ${lap()}"
         }
         val frames = when {
             manual != null -> {
@@ -186,7 +217,7 @@ object Stitcher {
             else -> images
         }
         // Remember the automatic result so the editor starts from it.
-        if (manual == null) try {
+        if (manual == null && ai == null) try { // the editor works with the room model, not AI depth
             val c = chosen.takeIf { align?.applied == true }
             EditState(fovScale = c?.fovScale ?: 1.0).apply {
                 if (c != null) { rhoWall = c.rhoWall; kappa = c.kappa }
@@ -210,6 +241,7 @@ object Stitcher {
 
         val out = IntArray(outW * outH)
         val core = StitchCore(frames, session.yaw0)
+        core.rhoMap = rhoMap
         when {
             manual != null -> { core.rhoWall = manual.rhoWall; core.kappa = manual.kappa }
             align != null && align.applied && chosen != null -> { core.rhoWall = chosen.rhoWall; core.kappa = chosen.kappa }
@@ -261,7 +293,7 @@ object Stitcher {
         diag.append("\nขนาด ${outW}×$outH · เวลา: ${times.joinToString(" · ")}")
         val report = diag.toString()
         Log.i("Stitch", report)
-        try { File(session.dir, "diag.txt").writeText(report) } catch (_: Exception) {}
+        try { File(session.dir, if (ai != null) PanoStore.DIAG_AI else PanoStore.DIAG).writeText(report) } catch (_: Exception) {}
         onProgress(1f)
         Result(bmp, outW, outH, report)
     }
